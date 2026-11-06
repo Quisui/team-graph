@@ -42,22 +42,37 @@ to Main.
 
 ## Install
 
-Load this folder directly:
+1. Clone the repo into a folder for your Claude Code mods:
+
+   ```sh
+   git clone https://github.com/Quisui/team-graph.git ~/.claude/mods/team-graph
+   ```
+
+2. Tell Claude Code to load plugins from that folder. Add this to the `env`
+   block of `~/.claude/settings.json` (create the block if it is missing). The
+   folder can hold several mods; each subfolder is loaded as its own plugin:
+
+   ```json
+   {
+     "env": {
+       "CLAUDE_CODE_PLUGIN_DIRS": "~/.claude/mods"
+     }
+   }
+   ```
+
+3. Start a new Claude Code session, or run `/reload-plugins` in an open one.
+   The graph opens on its own; `/team-graph` hides or shows it.
+
+To try it once without changing settings, point a single session at the folder:
 
 ```sh
-claude --plugin-dir <path>
+claude --plugin-dir ~/.claude/mods/team-graph
 ```
 
-Or merge this environment setting into `~/.claude/settings.json`, using an
-absolute path to this folder:
+**Update:** `git -C ~/.claude/mods/team-graph pull`, then `/reload-plugins`.
 
-```json
-{
-  "env": {
-    "CLAUDE_CODE_PLUGIN_DIRS": "/absolute/path/to/team-graph"
-  }
-}
-```
+**Uninstall:** delete `~/.claude/mods/team-graph` (and the `env` entry if no
+other mod uses it), then `/reload-plugins`.
 
 ## Use
 
