@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { drawBus, drawGraph, fadeColor, retro } from './register'
+import { drawBus, drawGraph, fadeColor, retro, tokensText, usageText, withFeatures } from './register'
 import { harness, stateKey } from './fake-engine'
 
 const node = { id: 'x', name: 'x', status: 'running', tools: 1, last: '', done: false, since: 0 }
@@ -407,4 +407,159 @@ test('UI polish: empty retro state, hidden-agent count, dim elapsed time and sol
   expect(bus[0].find(s => s.t.includes('· 5s'))?.d).toBe(true)
   expect(bus[0].find(s => s.t.includes('Message bus · 2 msgs'))?.b).toBe(true)
   expect(bus[1][0].t).toBe('─'.repeat(80))
+})
+
+const ALL = { needs: true, tokens: true, reasons: true, limits: true }
+
+test('needs-you follows the real order: tool.check asks inside tool.call, the box waits, and the answer clears it', async () => {
+  const agents = [{ id: 'x', name: 'x', description: 'x', type: 'agent', status: 'running' }]
+  const toasts: string[] = []
+  const h = harness({ agent: { list: async () => agents }, ui: { toast: (text: string) => { toasts.push(text) } } })
+  await h.run('session.start'); await h.tick()
+  const ask = async () => ({ decision: 'ask' })
+  let during: any
+  // the engine runs tool.check (and the dialog) inside tool.call's next()
+  await h.run('tool.call', { tool: 'Bash', agentId: 'x', tool_use_id: 'c1', input: { command: 'rm -rf build' } }, async () => {
+    expect(await h.run('tool.check', { tool: 'Bash', input: {}, agentId: 'x', tool_use_id: 'c1' }, ask)).toEqual({ decision: 'ask' })
+    await h.run('tool.check', { tool: 'Bash', input: {}, agentId: 'x', tool_use_id: 'c1' }, ask)
+    await new Promise(r => setTimeout(r, 0))
+    during = h.state('waits')
+    const view = h.state('nodes').map((n: any) => withFeatures(n, ALL, h.state('waits')))
+    const rows = text(drawGraph(view, 120, [], 0, 0, false, 'retro', 11, { enabled: false }, 'head'))
+    expect(rows).toContain('⚑ needs you')
+    expect(rows).toContain('⚑ 1 needs you')
+    return { result: { stdout: '' }, text: '' }
+  })
+  expect(during).toEqual([{ agent: 'x', call: 'c1' }])
+  expect(toasts).toEqual(['⚑ x needs you'])
+  await new Promise(r => setTimeout(r, 0))
+  expect(h.state('waits')).toEqual([])
+  // a denied or interrupted call clears it too
+  await h.run('tool.call', { tool: 'Bash', agentId: 'x', tool_use_id: 'c2', input: { command: 'x' } }, async () => {
+    await h.run('tool.check', { tool: 'Bash', input: {}, agentId: 'x', tool_use_id: 'c2' }, ask)
+    throw new Error('interrupted')
+  }).catch(() => {})
+  expect(h.state('waits')).toEqual([])
+  expect((await h.run('command.run', { command: 'team-graph', args: '--needs off' })).text).toBe('Needs off.')
+  await h.run('tool.check', { tool: 'Bash', input: {}, agentId: 'x' }, ask)
+  expect(h.state('waits')).toEqual([])
+  expect((await h.run('command.run', { command: 'team-graph', args: '--needs maybe' })).text).toBe('Use --needs on or --needs off.')
+})
+
+test('a first ask before the subagent box exists creates the box waiting and keeps it through discovery', async () => {
+  const agents: any[] = []
+  const toasts: string[] = []
+  const h = harness({ agent: { list: async () => agents }, ui: { toast: (text: string) => { toasts.push(text) } } })
+  await h.run('session.start'); await h.tick()
+  agents.push({ id: 'new', name: 'fixer', description: 'fixer', type: 'agent', status: 'running' })
+  await h.run('tool.check', { tool: 'Bash', input: {}, agentId: 'new', tool_use_id: 'c1' }, async () => ({ decision: 'ask' }))
+  expect(h.state('nodes').map((n: any) => n.name)).toEqual(['fixer'])
+  expect(h.state('waits')).toEqual([{ agent: 'new', call: 'c1' }])
+  expect(toasts).toContain('⚑ fixer needs you')
+  await h.tick()
+  expect(h.state('waits')).toEqual([{ agent: 'new', call: 'c1' }])
+  expect(withFeatures(h.state('nodes')[0], ALL, h.state('waits')).waiting).toBe(true)
+  expect(withFeatures(h.state('nodes')[0], { ...ALL, needs: false }, h.state('waits')).waiting).toBeUndefined()
+})
+
+test('tokens and failure reasons come from turn.complete and survive a refresh', async () => {
+  let agents = [{ id: 'x', name: 'x', description: 'x', type: 'agent', status: 'running' }]
+  const h = harness({ agent: { list: async () => agents } })
+  await h.run('session.start'); await h.tick()
+  agents = [{ ...agents[0], status: 'failed' }]
+  await h.run('turn.complete', { agentId: 'x', answer: 'Checking deployment\n\nError: deployment timed out\n', usage: { model: 'm', input_tokens: 9000, output_tokens: 3400, cache_read_input_tokens: 50000, cache_creation_input_tokens: 0 } }, async () => ({ text: '' }))
+  await h.tick()
+  const n = h.state('nodes')[0]
+  expect(n.tokens).toBe(12400)
+  expect(n.answer).toBe('Error: deployment timed out')
+  const shown = text(drawGraph([withFeatures(n, ALL)], 120, [], 0, 0, false, 'classic'))
+  expect(shown).toContain('12k tok')
+  expect(shown).toContain('Error: deployment timed out')
+  const hidden = text(drawGraph([withFeatures(n, { ...ALL, tokens: false, reasons: false })], 120, [], 0, 0, false, 'classic'))
+  expect(hidden).not.toContain('tok')
+  expect(hidden).not.toContain('deployment timed out')
+  expect(tokensText(950)).toBe('950 tok')
+  expect(tokensText(1234)).toBe('1.2k tok')
+})
+
+test('session cost and rate-limit use reach the bus title, each behind its flag', async () => {
+  const h = harness()
+  await h.run('session.start')
+  await h.run('session.measure', { context: {}, rateLimits: [{ kind: 'five_hour', percentUsed: 41.6 }, { kind: 'seven_day', percentUsed: 12 }], cost: { usd: 1.234 }, changed: ['cost'] }, async () => ({}))
+  const u = h.state('usage')
+  expect(u).toEqual({ usd: 1.234, limit: 42, kind: 'five_hour' })
+  const list = [{ ...node, tokens: 48000, done: true, status: 'completed' }]
+  expect(usageText(list, u, ALL)).toBe(' · 48k tok · $1.23 · limit 42%')
+  expect(usageText(list, u, { ...ALL, tokens: false })).toBe(' · limit 42%')
+  expect(usageText(list, u, { ...ALL, limits: false })).toBe(' · 48k tok · $1.23')
+  expect(usageText([], { usd: -1, limit: -1, kind: '' }, ALL)).toBe('')
+  const title = drawBus(list, [], 120, 5000, 2, [], 4, usageText(list, u, ALL))[0].map(s => s.t).join('')
+  expect(title).toContain('Message bus · 2 msgs · 48k tok · $1.23 · limit 42%')
+  expect((await h.run('command.run', { command: 'team-graph', args: '--limits off' })).text).toBe('Limits off.')
+  expect(h.state('features')).toEqual({ ...ALL, limits: false })
+})
+
+test('a parallel call finishing does not clear another open dialog; the box survives empty discovery', async () => {
+  const toasts: string[] = []
+  const h = harness({ agent: { list: async () => [] }, ui: { toast: (text: string) => { toasts.push(text) } } })
+  await h.run('session.start'); await h.tick()
+  const ask = async () => ({ decision: 'ask' })
+  await h.run('tool.check', { tool: 'Bash', input: {}, agentId: 'ghost', tool_use_id: 'bash-1' }, ask)
+  await h.run('tool.check', { tool: 'Edit', input: {}, agentId: 'ghost', tool_use_id: 'edit-1' }, ask)
+  expect(toasts).toEqual(['⚑ ghost needs you'])
+  await h.tick(); await h.tick()
+  expect(h.state('nodes').map((n: any) => n.id)).toEqual(['ghost'])
+  await h.run('tool.call', { tool: 'Read', agentId: 'ghost', tool_use_id: 'read-1', input: { file_path: 'a' } })
+  expect(h.state('waits').map((w: any) => w.call)).toEqual(['bash-1', 'edit-1'])
+  await h.run('tool.call', { tool: 'Bash', agentId: 'ghost', tool_use_id: 'bash-1', input: { command: 'ls' } })
+  expect(h.state('waits').map((w: any) => w.call)).toEqual(['edit-1'])
+  await h.run('turn.complete', { agentId: 'ghost', answer: 'done' }, async () => ({ text: '' }))
+  expect(h.state('waits')).toEqual([])
+})
+
+test('an ask in auto mode shows no needs-you; the same ask in default mode does', async () => {
+  const agents = [{ id: 'a', name: 'a', description: 'a', type: 'agent', status: 'running' }, { id: 'd', name: 'd', description: 'd', type: 'agent', status: 'running' }]
+  const toasts: string[] = []
+  const h = harness({ agent: { list: async () => agents }, ui: { toast: (text: string) => { toasts.push(text) } } })
+  await h.run('session.start'); await h.tick()
+  await h.run('agent.spawn', { tool_use_id: 's1', prompt: '', description: 'a', subagentType: 'x', permissionMode: 'auto' }, async () => ({ model: 'm', agentId: 'a' }))
+  await h.run('agent.spawn', { tool_use_id: 's2', prompt: '', description: 'd', subagentType: 'x', permissionMode: 'default' }, async () => ({ model: 'm', agentId: 'd' }))
+  expect(h.state('modes')).toEqual({ a: 'auto', d: 'default' })
+  const ask = async () => ({ decision: 'ask' })
+  await h.run('tool.check', { tool: 'Bash', input: {}, agentId: 'a', tool_use_id: 'c1' }, ask)
+  await h.run('tool.check', { tool: 'Bash', input: {}, agentId: 'd', tool_use_id: 'c2' }, ask)
+  expect(h.state('waits')).toEqual([{ agent: 'd', call: 'c2' }])
+  expect(toasts).toEqual(['⚑ d needs you'])
+})
+
+test('Codex boxes get unique names after a reload, and boxes sharing a name each keep their own line', async () => {
+  const h = harness()
+  await h.run('session.start')
+  h.set('nodes', [{ ...node, id: 'codex@external', name: 'codex', external: 'codex' }])
+  await h.run('tool.call', { tool: 'Bash', command: 'codex exec one', run_in_background: true }, async () => ({ text: 'Output file: /tmp/x/one.output' }))
+  await h.run('tool.call', { tool: 'Bash', command: 'codex exec two', run_in_background: true }, async () => ({ text: 'Output file: /tmp/x/two.output' }))
+  expect(h.state('nodes').map((n: any) => n.name)).toEqual(['codex', 'codex-2', 'codex-3'])
+  const twins = [0, 1, 2].map(i => ({ ...node, id: `t${i}`, name: 'twin' }))
+  const rows = text(drawGraph(twins, 79, [], 0, 0, false, 'classic', 21))
+  const lines = rows.split('\n')
+  // the two top boxes route sideways to the centre box: both elbows are drawn
+  expect(lines.some(l => (l.match(/╰/g) ?? []).length >= 2 || l.includes('╰') && l.includes('╯'))).toBe(true)
+})
+
+test('in auto mode a plugin ask or a question tool still needs the person; parallel launches get distinct names', async () => {
+  const agents = [{ id: 'a', name: 'a', description: 'a', type: 'agent', status: 'running' }]
+  const toasts: string[] = []
+  const h = harness({ agent: { list: async () => agents }, ui: { toast: (text: string) => { toasts.push(text) } } })
+  await h.run('session.start'); await h.tick()
+  await h.run('agent.spawn', { tool_use_id: 's1', prompt: '', description: 'a', subagentType: 'x', permissionMode: 'auto' }, async () => ({ model: 'm', agentId: 'a' }))
+  await h.run('tool.check', { tool: 'Bash', input: {}, agentId: 'a', tool_use_id: 'c1' }, async () => ({ decision: 'ask' }))
+  expect(h.state('waits') ?? []).toEqual([])
+  await h.run('tool.check', { tool: 'Bash', input: {}, agentId: 'a', tool_use_id: 'c2' }, async () => ({ decision: 'ask', plugin: 'guard' }))
+  await h.run('tool.check', { tool: 'AskUserQuestion', input: {}, agentId: 'a', tool_use_id: 'c3' }, async () => ({ decision: 'ask' }))
+  expect(h.state('waits').map((w: any) => w.call)).toEqual(['c2', 'c3'])
+  expect(toasts).toEqual(['⚑ a needs you'])
+  const launch = (n: number) => h.run('tool.call', { tool: 'Bash', command: `codex exec job${n}`, run_in_background: true }, async () => ({ text: `Output file: /tmp/x/job${n}.output` }))
+  await Promise.all([launch(1), launch(2)])
+  const names = h.state('nodes').filter((n: any) => n.external).map((n: any) => n.name)
+  expect(new Set(names).size).toBe(names.length)
 })

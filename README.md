@@ -20,6 +20,11 @@ to Main.
 
 ![Seven of eight agents done, message flights to Main](docs/screenshots/finishing-flights.png)
 
+The bus title with the `--tokens` and `--limits` extras: the session cost and
+the busiest rate-limit window, next to the message count and run time.
+
+![Bus title showing session cost and rate-limit use](docs/screenshots/bus-cost-limit.png)
+
 ## Features
 
 - Claude Code teams and subagents, including live tmux teammate activity.
@@ -30,7 +35,20 @@ to Main.
 - A 400 ms graph sweep, a 600 ms completion colour fade, and flowing hue on running lines.
 - Persisted visibility, theme, robot style, motion, and graph height. Idle effects stop updating.
 - Resize controls with `k` / `j` in the docked view; automatic layout sizing.
+- "Needs you" alerts, tokens and cost, failure reasons, and rate-limit use, each
+  switchable with a flag.
 - Job discovery in `$TMPDIR`, `/private/tmp`, and `/tmp` on macOS and Linux.
+
+## Cost
+
+The mod uses no tokens. It never calls a model or an API: it runs inside
+Claude Code as a normal program, reads local files (team configs, job logs in
+`$TMPDIR`) and runs `id`, `tmux` and `tail`. It adds nothing to your prompts
+or tool results. The only text that reaches the conversation is the one-line
+reply to a `/team-graph` command, such as `Team graph shown.`
+
+The `--tokens` and `--limits` extras only display numbers Claude Code already
+reports; reading them costs nothing.
 
 ## Requirements
 
@@ -85,7 +103,21 @@ other mod uses it), then `/reload-plugins`.
 /team-graph --rows 17
 /team-graph --motion off
 /team-graph --motion on
+/team-graph --needs off
+/team-graph --tokens off
+/team-graph --reasons off
+/team-graph --limits off
 ```
+
+Four extras are on by default; each has its own `on|off` flag and the choice
+persists:
+
+| Flag | Shows |
+|---|---|
+| `--needs` | An agent waiting on a permission dialog: its box turns yellow with `⚑ needs you`, the head says `⚑ 1 needs you`, and a toast fires once. Claude Code reports no "dialog answered" event, so the flag clears when that tool call returns: an approved long command keeps it until the command ends. In `auto`, `dontAsk` and `bypassPermissions` modes no dialog appears, so no flag shows, except for a plugin's ask or a question/plan tool. A custom agent whose definition sets its own `permissionMode` is judged by its parent's mode. |
+| `--tokens` | Tokens per finished agent (`✓ done · 7s · 12k tok`), plus the run's total tokens and the session cost in the bus title. |
+| `--reasons` | A failed agent's box shows its last answer line instead of its last tool. |
+| `--limits` | The busiest rate-limit window in the bus title (`limit 42%`), when your plan reports one. |
 
 The pane opens by default in a new session. `/team-graph` toggles it, and a
 hidden pane stays hidden across sessions. Theme selection also shows a hidden pane.

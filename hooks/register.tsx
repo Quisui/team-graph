@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Flight, Msg, Node } from '../types'
+import type { Features, Flight, Msg, Node, Usage, Wait } from '../types'
 import { easeOutCirc, easeInOutCubic } from './easing'
 
 const nodes = atom({ plugin: 'team-graph', key: 'nodes' } as const, [])
@@ -21,6 +21,18 @@ const theme = atom({ plugin: 'team-graph', key: 'theme' } as const, 'retro')
 const frame = atom({ plugin: 'team-graph', key: 'frame' } as const, 0)
 
 const motion = atom({ plugin: 'team-graph', key: 'motion' } as const, true)
+// each extra can be switched with `/team-graph --<name> on|off`; all start on
+export const FEATURES = ['needs', 'tokens', 'reasons', 'limits'] as const
+const features = atom({ plugin: 'team-graph', key: 'features' } as const, { needs: true, tokens: true, reasons: true, limits: true })
+// -1 = not reported yet (no ledger, or no subscription rate limits)
+// open permission dialogs, one per tool call; only the needs-you hooks write it, so node rebuilds cannot lose it
+const waits = atom({ plugin: 'team-graph', key: 'waits' } as const, [] as Wait[])
+// each subagent's inherited permission mode, from agent.spawn; modes that never show a dialog skip needs-you
+const modes = atom({ plugin: 'team-graph', key: 'modes' } as const, {} as Record<string, string>)
+const SILENT_MODES = ['auto', 'dontAsk', 'bypassPermissions']
+// tools that always put a question or a plan to the person, whatever the mode
+const PERSON_TOOLS = ['AskUserQuestion', 'ExitPlanMode']
+const usage = atom({ plugin: 'team-graph', key: 'usage' } as const, { usd: -1, limit: -1, kind: '' })
 const openedAt = atom({ plugin: 'team-graph', key: 'openedAt' } as const, -1)
 
 export const GRAPH_ROWS = 11
@@ -78,6 +90,29 @@ const isPending = (n: Node) => n.status === 'pending' || n.status === 'idle' && 
 const isDone = (n: Node) => !isPending(n) && (n.done || ['completed', 'failed', 'killed', 'idle'].includes(n.status))
 // Agent ids look like `frontend@session-…`; tool.call and agent.list may spell them differently.
 const same = (n: Pick<Node, 'id' | 'name'>, id: string) => n.id === id || n.name === id.split('@')[0] || n.id.split('@')[0] === id
+// fields the hooks add that a rebuild from agent.list or team files must keep
+const extras = (p?: Node): Partial<Node> => p ? { ...(p.tokens != null && { tokens: p.tokens }), ...(p.answer && { answer: p.answer }) } : {}
+export const tokensText = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k tok` : `${n} tok`
+// what a box may show, per the switched-on extras: drawing code reads only these fields
+export const withFeatures = (n: Node, show: Features, waiting: Wait[] = []): Node => {
+  const { waiting: _, tokens, reason, ...rest } = n
+  const failed = n.status === 'failed' || n.status === 'killed'
+  return {
+    ...rest,
+    ...(show.needs && waiting.some(w => same(n, w.agent)) && !isDone(n) && { waiting: true }),
+    ...(show.tokens && tokens && { tokens }),
+    ...(show.reasons && failed && n.answer && { reason: n.answer }),
+  }
+}
+// the bus title's tail: run tokens and session cost (tokens extra), rate-limit use (limits extra)
+export const usageText = (list: Node[], u: Usage, show: Features) => {
+  const total = list.reduce((sum, n) => sum + (n.tokens ?? 0), 0)
+  return [
+    show.tokens && total ? tokensText(total) : '',
+    show.tokens && u.usd >= 0 ? `$${u.usd.toFixed(2)}` : '',
+    show.limits && u.limit >= 0 ? `limit ${u.limit}%` : '',
+  ].filter(Boolean).map(s => ` · ${s}`).join('')
+}
 const TEAM_COLOR: Record<string, string> = { purple: 'magenta', orange: 'yellow', pink: 'magenta' }
 const teamColors: Record<string, string> = {}
 const EXTERNAL_COLOR: Record<string, string> = { codex: '#a9b4c0', gemini: 'blue' }
@@ -213,7 +248,8 @@ export function drawGraph(list: Node[], W: number, fl: Flight[] = [], now = 0, t
   const eyeOffset = eyeHome + ((running || mainBusy) && effects.enabled && !blink ? [0, -1, 0, 1, 0, 0, 0, 0][step % 8] : 0)
   const failedCount = list.filter(n => n.status === 'failed' || n.status === 'killed').length
   const allDoneText = failedCount ? `Done · ${failedCount} failed` : 'All done'
-  const info = running ? `${running} running` : mainBusy ? clip(pretty(clean(main.last)), 22) : all ? allDoneText : ''
+  const waitingCount = list.filter(n => n.waiting && !isDone(n)).length
+  const info = waitingCount ? `⚑ ${waitingCount} need${waitingCount === 1 ? 's' : ''} you` : running ? `${running} running` : mainBusy ? clip(pretty(clean(main.last)), 22) : all ? allDoneText : ''
   const leadBody2 = !c2 ? undefined
     : head ? tallHead ? `│${' '.repeat(eyeOffset)}${eyes}${' '.repeat(IW - eyeSpan - eyeOffset)}│${info ? ' ' + info : ''}` : `[${eyes}]${info ? ' ' + info : ''}`
     : all && list.length ? `${ROBOT_CHEER} ${allDoneText}`
@@ -241,26 +277,27 @@ export function drawGraph(list: Node[], W: number, fl: Flight[] = [], now = 0, t
     if (s.x > leadL && s.x < leadR) {
       const edge = s.y < cy ? cy - 1 : cy + 1 + leadExtra
       for (let y = s.y + 2 * dir; dir * (edge - y) > 0; y += dir) pts.push({ x: s.x, y })
-      straight.add(s.n.name)
+      straight.add(s.n.id)
     } else {
       for (let y = s.y + 2 * dir; dir * (cy + dir - y) > 0; y += dir) pts.push({ x: s.x, y })
       const end = s.x < cx ? leadL - 1 : leadR + 1
       const step = end > s.x ? 1 : -1
       for (let x = s.x + step; x !== end + step; x += step) pts.push({ x, y: cy })
     }
-    routes.set(s.n.name, pts)
+    // keyed by id: two boxes may share a name (same subagent description)
+    routes.set(s.n.id, pts)
   }
   // Lay the lines: record each cell's neighbours, colour by the agent when it is working.
   const links = new Map<string, { dirs: Set<string>; c: string }>()
   for (const s of spots) {
-    const pts = routes.get(s.n.name)!
+    const pts = routes.get(s.n.id)!
     const c = c2 ? (isDone(s.n) ? C2.line : C2.run) : isDone(s.n) ? 'gray' : colorOf(list, s.n.name)
     pts.forEach((p, i) => {
       const k = `${p.x},${p.y}`
       const l = links.get(k) ?? { dirs: new Set<string>(), c }
       if (c !== 'gray') l.c = effects.enabled && !isDone(s.n) && s.n.status === 'running'
         ? hueShift(c, 25 * Math.sin(2 * Math.PI * (now / 4000 - i / 12))) : c
-      for (const q of [pts[i - 1] ?? { x: s.x, y: s.y + (s.y < cy ? 1 : -1) }, pts[i + 1] ?? (straight.has(s.n.name) ? { x: p.x, y: p.y + (s.y < cy ? 1 : -1) } : { x: p.x + (p.x < cx ? 1 : -1), y: p.y })]) {
+      for (const q of [pts[i - 1] ?? { x: s.x, y: s.y + (s.y < cy ? 1 : -1) }, pts[i + 1] ?? (straight.has(s.n.id) ? { x: p.x, y: p.y + (s.y < cy ? 1 : -1) } : { x: p.x + (p.x < cx ? 1 : -1), y: p.y })]) {
         if (q.y < p.y) l.dirs.add('u')
         if (q.y > p.y) l.dirs.add('d')
         if (q.x < p.x) l.dirs.add('l')
@@ -277,14 +314,15 @@ export function drawGraph(list: Node[], W: number, fl: Flight[] = [], now = 0, t
   }
 
   // Messages in flight: just a dot with a trail running along the routes; the text lives in the bus.
+  const routeOf = (who: string) => routes.get(list.find(n => n.name === who.split('@')[0])?.id ?? '') ?? []
   for (const f of fl) {
     const p = (now - f.at) / FLIGHT_MS
     if (p < 0 || p > 1) continue
     const c = c2 ? C2.art : colorOf(list, f.from)
     const targets = f.to === '*' ? spots.map(s => s.n.name).filter(n => n !== f.from) : [f.to]
     for (const to of targets) {
-      const out = LEAD.includes(f.from) ? [] : routes.get(f.from.split('@')[0]) ?? []
-      const back = LEAD.includes(to) ? [] : [...(routes.get(to.split('@')[0]) ?? [])].reverse()
+      const out = LEAD.includes(f.from) ? [] : routeOf(f.from)
+      const back = LEAD.includes(to) ? [] : [...routeOf(to)].reverse()
       const pts = [...out, ...back]
       if (!pts.length) continue
       const i = Math.round(p * (pts.length - 1))
@@ -307,13 +345,15 @@ export function drawGraph(list: Node[], W: number, fl: Flight[] = [], now = 0, t
     const took = n.since != null ? ` · ${secs((done ? n.ended ?? now : now) - n.since)}` : ''
     const failed = n.status === 'failed' || n.status === 'killed'
     const pending = isPending(n)
-    const state = (failed ? '✗ ' + n.status : pending ? '○ ' + n.status : done ? (n.status === 'idle' ? '✓ idle' : '✓ done') : `● ${spin[tick % spin.length]} ${n.external ? secs(now - (n.since ?? now)) : n.tools}`) + (n.external && !done ? '' : took)
-    const body = !n.last || n.last === 'starting' ? 'Starting' : pretty(clean(n.last))
+    const waiting = !!n.waiting && !done
+    const tokens = done && n.tokens ? ` · ${tokensText(n.tokens)}` : ''
+    const state = (failed ? '✗ ' + n.status : pending ? '○ ' + n.status : waiting ? '⚑ needs you' : done ? (n.status === 'idle' ? '✓ idle' : '✓ done') : `● ${spin[tick % spin.length]} ${n.external ? secs(now - (n.since ?? now)) : n.tools}`) + (n.external && !done || waiting ? '' : took) + tokens
+    const body = n.reason ? pretty(clean(n.reason)) : !n.last || n.last === 'starting' ? 'Starting' : pretty(clean(n.last))
     if (c2) {
-      const tone = toneFrom(failed ? C2.fail : pending ? C2.pend : done ? C2.done : n.status === 'running' ? C2.run : C2.pend, C2.run)
+      const tone = toneFrom(failed ? C2.fail : waiting ? C2.ask : pending ? C2.pend : done ? C2.done : n.status === 'running' ? C2.run : C2.pend, C2.run)
       box(x, y, w, n.external ? `⬡ ${cap(n.name)}` : cap(n.name), state, body, tone, C2.log, landed(n.name), tone)
     } else
-      box(x, y, w, n.external ? `⬡ ${cap(n.name)}` : cap(n.name), state, body, toneFrom(failed ? 'red' : done ? 'gray' : c), done ? toneFrom('gray', 'white') : undefined, landed(n.name), toneFrom(failed ? 'red' : done ? 'green' : c))
+      box(x, y, w, n.external ? `⬡ ${cap(n.name)}` : cap(n.name), state, body, toneFrom(failed ? 'red' : waiting ? 'yellow' : done ? 'gray' : c), done ? toneFrom('gray', 'white') : undefined, landed(n.name), toneFrom(failed ? 'red' : waiting ? 'yellow' : done ? 'green' : c))
   }
   const lead = box(cx, cy, leadW, leadTitle, '', leadBody, c2 ? C2.hdr : 'cyan', c2 ? C2.log : all ? 'green' : 'cyan', LEAD.some(landed), undefined, leadBody2, tallHead ? HEAD_BOTTOM : undefined)
   if (head) {
@@ -338,7 +378,7 @@ export function drawGraph(list: Node[], W: number, fl: Flight[] = [], now = 0, t
   }
   // join the lines into the orchestrator's sides
   for (const s of spots) {
-    if (straight.has(s.n.name)) {
+    if (straight.has(s.n.id)) {
       const jy = s.y < cy ? cy - 1 : cy + 1 + leadExtra
       // join only onto plain border, never over the title or status text
       if (grid[jy]?.[s.x]?.ch === '─') put(s.x, jy, s.y < cy ? '┴' : '┬', 'cyan')
@@ -375,7 +415,7 @@ const ROBOT_CHEER = '\\[^_^]/'
 // mid-tones (not near-white) so outline, log text and Codex stay readable on light terminals too
 const HEAD_FG = '#c8c2b5'
 const C2 = {
-  run: '#ffb454', done: '#7ee787', fail: '#ff6b6b', pend: '#8b949e', line: '#3d4450',
+  run: '#ffb454', done: '#7ee787', fail: '#ff6b6b', pend: '#8b949e', line: '#3d4450', ask: '#f9e04b',
   hdr: '#a78bfa', art: '#79c0ff', log: '#a9b4c0', spin: '⣾⣽⣻⢿⡿⣟⣯⣷',
 }
 const hex = (h: string) => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16))
@@ -435,7 +475,7 @@ export function themeArg(args: string) {
 }
 
 
-export function drawBus(list: Node[], msgs: Msg[], W: number, now: number, count: number, timestamps: number[], lines = GRAPH_ROWS - 2): Seg[][] {
+export function drawBus(list: Node[], msgs: Msg[], W: number, now: number, count: number, timestamps: number[], lines = GRAPH_ROWS - 2, extra = ''): Seg[][] {
   // the elapsed timer only runs while some agent is working; idle, the header is just the count
   const busy = list.some(n => !isDone(n))
   // time of the current burst of work: since the earliest still-running agent started
@@ -445,7 +485,7 @@ export function drawBus(list: Node[], msgs: Msg[], W: number, now: number, count
   const bars = spark(timestamps, now).slice(Math.max(0, 12 - W))
   const label = W >= 70 ? ' Activity ' : W > 12 ? ' ' : ''
   const titleW = Math.max(0, W - displayWidth(label + bars))
-  const title = pad(clip(name + elapsed, titleW), titleW)
+  const title = pad(clip(name + elapsed + extra, titleW), titleW)
   const visible = msgs.slice(-Math.max(1, lines))
   return [
     // the bars are messages per 5 s over the last minute; a dim label names them when there is room
@@ -490,7 +530,6 @@ let uid = ''
 let taskDir = ''
 let loadedAt = 0
 let externalPolling = false
-const externalCounts: Record<string, number> = {}
 const seen = new Set<string>()
 let noMotion = false
 let motionEnvRead = false
@@ -719,6 +758,7 @@ async function refreshNodes($: EngineInterface, capture = true, knownAgents?: Aw
       const base = fresh ? pane?.tools ?? 0 : prev?.base ?? 0
       const tools = fresh ? 0 : Math.max(prev?.tools ?? 0, pane ? pane.tools - base : 0)
       return {
+        ...extras(prev),
         id: `${m.name}@team`, name: m.name, status: active ? 'running' : 'idle', base, tools,
         last: pane?.last || prev?.last || '', done: !active,
         since: fresh ? at : prev?.since,
@@ -731,6 +771,7 @@ async function refreshNodes($: EngineInterface, capture = true, knownAgents?: Aw
       const done = ['completed', 'failed', 'killed'].includes(a.status)
       const fresh = !done && (!prev || isDone(prev))
       list.push({
+        ...extras(prev),
         id: a.id, name: a.name || a.description || a.type, status: a.status,
         tools: fresh ? 0 : prev?.tools ?? 0, last: prev?.last ?? '', done,
         since: fresh ? at : prev?.since,
@@ -738,7 +779,17 @@ async function refreshNodes($: EngineInterface, capture = true, knownAgents?: Aw
       })
     }
     list.push(...old.filter(n => n.external))
-    if (JSON.stringify(list) !== JSON.stringify(old)) await update($, nodes, cur => [...list.filter(n => !n.external), ...cur.filter(n => n.external)])
+    // turn.complete may set tokens/answer while this rebuild awaits: take those from the state at write time
+    const fresh = (cur: Node[], n: Node): Node => {
+      const now = cur.find(c => c.id === n.id)
+      if (!now) return n
+      const { tokens, answer, ...rest } = n
+      return { ...rest, ...extras(now) }
+    }
+    const open = await read($, waits)
+    // a box with an open dialog stays even before discovery lists its agent
+    const pending = (cur: Node[]) => cur.filter(n => !n.external && !list.some(l => l.id === n.id) && open.some(w => same(n, w.agent)))
+    if (JSON.stringify(list) !== JSON.stringify(old)) await update($, nodes, cur => [...list.filter(n => !n.external).map(n => fresh(cur, n)), ...pending(cur), ...cur.filter(n => n.external)])
     for (const id of toldFailed) if (!list.some(n => n.id === id)) toldFailed.delete(id)
     for (const n of [...list, ...(await read($, nodes)).filter(x => x.external)])
       if ((n.status === 'failed' || n.status === 'killed') && !toldFailed.has(n.id)) {
@@ -755,12 +806,19 @@ async function refreshNodes($: EngineInterface, capture = true, knownAgents?: Aw
 }
 
 async function startExternal($: EngineInterface, provider: string, task: string, output?: string) {
-  const count = externalCounts[provider] = (externalCounts[provider] ?? 0) + 1
-  const name = count === 1 ? provider : `${provider}-${count}`
   const at = await $.clock.now()
-  const node: Node = { id: `${name}@external`, name, external: provider, status: 'running', tools: 0, last: '', done: false, since: at, changed: at, output, background: !!output }
-  await update($, nodes, ns => [...ns, node])
-  await addMessage($, 'main', name, `task: ${clip(task, 120)}`)
+  let node!: Node
+  // first free name among the boxes on screen, picked inside the update so parallel launches cannot
+  // share one (a module counter also restarted at 1 after a reload while saved boxes kept their names)
+  await update($, nodes, ns => {
+    const taken = new Set(ns.map(n => n.name))
+    let count = 1
+    while (taken.has(count === 1 ? provider : `${provider}-${count}`)) count++
+    const name = count === 1 ? provider : `${provider}-${count}`
+    node = { id: `${name}@external`, name, external: provider, status: 'running', tools: 0, last: '', done: false, since: at, changed: at, output, background: !!output }
+    return [...ns, node]
+  })
+  await addMessage($, 'main', node.name, `task: ${clip(task, 120)}`)
   return node
 }
 
@@ -976,6 +1034,12 @@ async function pruneFlights($: EngineInterface, now: number) {
     await update($, flights, cur => cur.filter(f => now - f.at < FLIGHT_TTL))
 }
 
+// clears one call's dialog, or every dialog of the agent when no call is named (its turn ended)
+async function clearWaiting($: EngineInterface, agent: string, call?: string) {
+  const hit = (w: Wait) => w.agent === agent && (call == null || w.call === call)
+  if ((await read($, waits)).some(hit)) await update($, waits, ws => ws.filter(w => !hit(w)))
+}
+
 async function trackSubagent($: EngineInterface, id: string, tool: string, args: Record<string, unknown>, at: number) {
   await refreshNodes($, false)
   if (!(await read($, nodes)).some(n => same(n, id))) {
@@ -998,12 +1062,11 @@ export function resetModuleState() {
   tmpdir = undefined
   toldFailed.clear(); seen.clear(); rejectedPaths.clear(); rejectedAt.clear(); teamConfigs.clear()
   for (const key of Object.keys(teamColors)) delete teamColors[key]
-  for (const key of Object.keys(externalCounts)) delete externalCounts[key]
 }
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'team-graph', description: 'Show or hide the agent graph; --theme classic|retro, --rows N, --motion off|on, --robot head|plain' })
+    await $.command.register({ name: 'team-graph', description: 'Show or hide the agent graph; --theme classic|retro, --rows N, --motion off|on, --robot head|plain, --needs|--tokens|--reasons|--limits on|off' })
     $.ui.status(undefined)
     if (!motionEnvRead) {
       motionEnvRead = true
@@ -1046,6 +1109,17 @@ export const register: Register = on => {
         await update($, frame, f => f + 1)
       }
       return { text: `Robot ${robotMatch[1]}.` }
+    }
+    // `--needs off`, `--tokens on`, `--reasons off`, `--limits on`: extras, each persisted, all on by default
+    const featureMatch = /(?:^|\s)--(needs|tokens|reasons|limits)(?:[=\s]+(\S+))?/.exec(commandArgs)
+    if (featureMatch) {
+      const [, name, value] = featureMatch as unknown as [string, keyof Features, string | undefined]
+      if (!['on', 'off'].includes(value ?? '')) return { text: `Use --${name} on or --${name} off.` }
+      if (await isOwner($)) {
+        await update($, features, f => ({ ...f, [name]: value === 'on' }))
+        await update($, frame, f => f + 1)
+      }
+      return { text: `${name[0].toUpperCase()}${name.slice(1)} ${value}.` }
     }
     const motionMatch = /(?:^|\s)--motion(?:[=\s]+(\S+))?/.exec(commandArgs)
     if (motionMatch) {
@@ -1133,11 +1207,16 @@ export const register: Register = on => {
       before = spawning ? await $.agent.list().catch(() => []) : []
     } catch {} // Graph bookkeeping must never prevent the tool from running.
     let result
+    // tool.check (and any permission dialog) runs inside next(e): once it returns, the dialog is answered
+    // the API has no 'dialog answered' event, so a wait ends when its own call returns (after the tool ran)
+    const answered = () => e.agentId ? clearWaiting($, e.agentId, e.tool_use_id).catch(() => {}) : undefined
     try { result = await next(e) } catch (error) {
+      await answered()
       // a thrown tool call is an interrupt or abort, not a failure of the AI CLI itself
       if (external) await finishExternal($, external.id, 'stopped', String(error)).catch(() => {})
       throw error
     }
+    await answered()
     try {
       if (external) {
         const value = result as unknown as Record<string, unknown> | null
@@ -1184,11 +1263,76 @@ export const register: Register = on => {
         const agent = current.find(n => same(n, id)) ?? previous
         if (agent && !current.some(n => same(n, id))) await update($, nodes, ns => [...ns, agent])
         const failure = [previous?.status, agent?.status].find(status => status === 'failed' || status === 'killed')
-        await update($, nodes, ns => ns.map(n => same(n, id) ? { ...n, status: failure ?? (['failed', 'killed'].includes(n.status) ? n.status : 'completed'), done: true, ended: n.ended ?? at } : n))
+        await clearWaiting($, id)
+        const used = e.usage ?? (result as { usage?: typeof e.usage })?.usage
+        const tokens = used ? used.input_tokens + used.output_tokens : 0
+        // the last line usually carries the outcome (an error, a verdict), so it is the failure reason
+        const answer = String(e.answer ?? '').split('\n').filter(l => l.trim()).at(-1)?.trim()
+        await update($, nodes, ns => ns.map(n => same(n, id) ? {
+          ...n, status: failure ?? (['failed', 'killed'].includes(n.status) ? n.status : 'completed'), done: true, ended: n.ended ?? at,
+          ...(tokens && { tokens: (n.tokens ?? 0) + tokens }), ...(answer && { answer: clip(answer, 120) }),
+        } : n))
         if (agent && !agent.id.endsWith('@team'))
           await addMessage($, agent.name, 'main', clip(String(e.answer ?? '').split('\n')[0], 120))
       }
     } catch {} // Completion belongs to the host, even if polling fails.
+    return result
+  })
+
+  // an `ask` verdict on a subagent's tool means a dialog now waits for the person
+  on('tool.check', async ($, e, next) => {
+    const result = await next(e)
+    try {
+      const id = e.agentId
+      const verdict = result as { decision?: string; plugin?: string }
+      // an ask in auto/dontAsk/bypass mode is settled by the mode with no dialog, except a plugin's ask
+      // (typings: "such an ask is a person's", no classifier settles it) or a question/plan tool
+      const forPerson = !!verdict?.plugin || PERSON_TOOLS.includes(e.tool)
+      if (id && verdict?.decision === 'ask' && (await isOwner($)) && (await read($, features)).needs
+        && (forPerson || !SILENT_MODES.includes((await read($, modes))[id] ?? ''))) {
+        const call = e.tool_use_id ?? ''
+        // decided inside the update, so two asks at once still toast once
+        let first = false
+        await update($, waits, ws => {
+          first = !ws.some(w => w.agent === id)
+          return ws.some(w => w.agent === id && w.call === call) ? ws : [...ws, { agent: id, call }]
+        })
+        // a new subagent's first ask can come before its box exists (tool.call tracks it beside the tool):
+        // add a placeholder box now, named from the agent list only after the wait is recorded
+        let known = (await read($, nodes)).find(n => same(n, id))
+        if (!known) {
+          const at = await $.clock.now()
+          await update($, nodes, ns => ns.some(n => same(n, id)) ? ns : [...ns, { id, name: id, status: 'running', tools: 0, last: '', done: false, since: at }])
+          const a = (await $.agent.list().catch(() => [])).find(a => a.id === id)
+          const name = a?.name || a?.description || a?.type
+          if (name) await update($, nodes, ns => ns.map(n => n.id === id && n.name === id ? { ...n, name } : n))
+          known = (await read($, nodes)).find(n => same(n, id))
+        }
+        if (first) toast($, `⚑ ${known?.name ?? id} needs you`)
+      }
+    } catch {} // The permission decision belongs to the host.
+    return result
+  })
+
+  on('agent.spawn', async ($, e, next) => {
+    const result = await next(e)
+    try {
+      const id = (result as { agentId?: string })?.agentId
+      if (id && e.permissionMode && (await isOwner($)))
+        await update($, modes, m => Object.fromEntries([...Object.entries(m), [id, e.permissionMode!]].slice(-50)))
+    } catch {} // Spawning belongs to the host.
+    return result
+  })
+
+  on('session.measure', async ($, e, next) => {
+    const result = await next(e)
+    try {
+      if (await isOwner($)) {
+        const top = [...(e.rateLimits ?? [])].sort((a, b) => b.percentUsed - a.percentUsed)[0]
+        const now = { usd: e.cost?.usd ?? -1, limit: top ? Math.round(top.percentUsed) : -1, kind: top?.kind ?? '' }
+        if (JSON.stringify(now) !== JSON.stringify(await read($, usage))) await update($, usage, () => now)
+      }
+    } catch {} // Usage readings are best effort.
     return result
   })
 
@@ -1197,7 +1341,10 @@ export const register: Register = on => {
     paneOpen = true
     const { Box, Text, Button } = $.ui.resolve(e)
     const now0 = await $.clock.now()
+    const show = await read($, features)
+    const waiting = await read($, waits)
     const list = (await read($, nodes)).filter(n => !(n.external && isDone(n) && now0 - (n.ended ?? now0) > 300000))
+      .map(n => withFeatures(n, show, waiting))
     const msgs = await read($, log)
     const fl = await read($, flights)
     await read($, frame) // Subscribe to animation invalidation.
@@ -1215,6 +1362,7 @@ export const register: Register = on => {
     const style = await read($, robotStyle)
     const mainNow = { last: await read($, mainLast), at: await read($, mainAt) }
     const busArgs = [await read($, messageCount), await read($, times)] as const
+    const extra = usageText(list, await read($, usage), show)
     let rows: Seg[][]
     let divider = -1
     let H = GRAPH_ROWS
@@ -1228,13 +1376,13 @@ export const register: Register = on => {
       rows = [
         ...drawGraph(list, total, enabled ? fl : [], now, tick, hasTeam, look, H, effects, style, mainNow),
         [{ t: '' }],
-        ...drawBus(list, msgs, total, now, ...busArgs, busLines),
+        ...drawBus(list, msgs, total, now, ...busArgs, busLines, extra),
       ]
     } else {
       const busW = Math.min(64, Math.max(16, Math.floor(total * 0.34)))
       const W = total - busW - 3
       const graph = drawGraph(list, W, enabled ? fl : [], now, tick, hasTeam, look, GRAPH_ROWS, effects, style, mainNow)
-      const bus = drawBus(list, msgs, busW, now, ...busArgs)
+      const bus = drawBus(list, msgs, busW, now, ...busArgs, GRAPH_ROWS - 2, extra)
       rows = Array.from({ length: Math.max(graph.length, bus.length) }, (_, i) => {
         const g = graph[i] ?? []
         const width = g.reduce((n, sg) => n + displayWidth(sg.t), 0)
