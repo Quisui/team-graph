@@ -6,7 +6,19 @@ bus shows their communication and recent activity.
 
 ## Screenshots
 
-Screenshots of the classic and retro themes are coming soon.
+Retro theme, four subagents: two running, two done, with the progress bar,
+the robot head and the message bus.
+
+![Four agents, two running and two done](docs/screenshots/four-agents.png)
+
+Eight agents in two rows, six still running.
+
+![Eight agents, six running](docs/screenshots/eight-agents-running.png)
+
+The run almost finished: the head's `^ ^` eyes, and message flights travelling
+to Main.
+
+![Seven of eight agents done, message flights to Main](docs/screenshots/finishing-flights.png)
 
 ## Features
 
