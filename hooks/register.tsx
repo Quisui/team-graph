@@ -836,6 +836,32 @@ export const unshell = (cmd: string) => {
   return m ? m[2] + (m[3] ?? '') : cmd
 }
 
+// Where a CLI run writes its log: `> f`, `>> f`, `&> f` or `| tee f`, with `D=...` set earlier in
+// the same command expanded. Lets a foreground `codex exec ... > log` box follow its log.
+export function logPathOf(command: string): string | undefined {
+  const vars: Record<string, string> = {}
+  for (const m of command.matchAll(/(?:^|[\s;&])(\w+)=(["']?)([^\s"';&|]+)\2(?=[\s;&]|$)/g)) vars[m[1]] = m[3]
+  const target = /(?:&?>>?|\|\s*tee(?:\s+-a)?)\s*(["']?)([^\s"'|;&<>]+)\1/.exec(command.replace(/\d?>&\d/g, ''))?.[2]
+  const path = target?.replace(/\$\{?(\w+)\}?/g, (_, v) => vars[v] ?? `$${v}`)
+  return path?.startsWith('/') && !path.includes('$') && path !== '/dev/null' ? path : undefined
+}
+
+// Progress from a plain `codex exec` log (no `[codex] ` prefixes): a header line `exec` or `codex`
+// precedes the command or message, and `tokens used` marks the end, followed by the final answer.
+export function rawCodexProgress(raw: string) {
+  const lines = raw.replace(/\r/g, '').split('\n').map(clean)
+  const end = lines.lastIndexOf('tokens used')
+  let last: string | undefined
+  for (let i = lines.length - 2; i >= 0 && !last; i--) {
+    if (lines[i] === 'exec') last = `Running ▸ ${unshell(lines[i + 1].replace(/ in \/\S*$/, ''))}`
+    else if (lines[i] === 'codex') last = `Says ▸ ${lines[i + 1]}`
+  }
+  // the answer is the last message before `tokens used`, so only a finished run has one
+  const said = end < 0 ? -1 : lines.lastIndexOf('codex', end)
+  const answer = said >= 0 ? lines.slice(said + 1, end).join(' ').replace(/\s+/g, ' ').trim() : undefined
+  return { last, answer, finished: end >= 0 }
+}
+
 const CODEX_SILENT_MS = 180000
 
 async function pollExternal($: EngineInterface) {
@@ -924,15 +950,16 @@ async function pollExternal($: EngineInterface) {
       const changed = Number.isFinite(modified) ? modified : node.changed ?? now
       const lines = raw.split('\n')
       const activity = lines.filter(l => /^\[codex\] (Running command:|Assistant message captured:)/.test(l)).at(-1)
-      const answer = lastCodexAnswer(raw) ?? node.answer ?? ''
+      const plain = /^\[codex\] /m.test(raw) ? undefined : rawCodexProgress(raw)
+      const answer = lastCodexAnswer(raw) ?? plain?.answer ?? node.answer ?? ''
       const last = activity
         ? activity.startsWith('[codex] Running command: ')
           ? `Running ▸ ${unshell(activity.slice('[codex] Running command: '.length))}`
           : activity.replace(CODEX_ANSWER, 'Says ▸ ')
-        : node.last
+        : plain?.last ?? node.last
       const exit = /^\[exited with code (-?\d+)\]/m.exec(raw)
       // Codex can think silently for minutes, so silence only ends a box after CODEX_SILENT_MS
-      const finished = !!exit || /^\[codex\] Turn completed\./m.test(raw) || now - changed >= CODEX_SILENT_MS
+      const finished = !!exit || /^\[codex\] Turn completed\./m.test(raw) || !!plain?.finished || now - changed >= CODEX_SILENT_MS
       await update($, nodes, ns => ns.map(n => n.id === node!.id ? { ...n, last, answer, changed, ...(!finished ? { status: 'running', done: false, ended: undefined } : {}) } : n))
       if (finished) {
         // 128+ is a signal exit: the job was killed (TaskStop, timeout), not a Codex failure
@@ -1203,7 +1230,7 @@ export const register: Register = on => {
         for (const m of inboxMessages(JSON.stringify([{ from, summary: args.summary, text: typeof raw === 'string' ? raw : JSON.stringify(raw) }]), to))
           await addMessage($, m.from, m.to, m.text)
       }
-      external = provider ? await startExternal($, provider, command.split('\n')[0]) : undefined
+      external = provider ? await startExternal($, provider, command.split('\n')[0], logPathOf(command)) : undefined
       before = spawning ? await $.agent.list().catch(() => []) : []
     } catch {} // Graph bookkeeping must never prevent the tool from running.
     let result

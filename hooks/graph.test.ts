@@ -3,7 +3,7 @@ import { fakeEngine } from './fake-engine'
 import { easeInOutCubic, easeOutCirc } from './easing'
 
 import { clip, displayWidth, drawBus, drawGraph, GRAPH_ROWS, inboxMessages, pretty, register, rememberMessage, spark } from './register'
-import { providerOf, actionOf, unshell, shortPaths, retro, themeArg, progressBar, cap, fadeColor, hueShift, effectsActive, clean, motionEnabled } from './register'
+import { providerOf, logPathOf, rawCodexProgress, actionOf, unshell, shortPaths, retro, themeArg, progressBar, cap, fadeColor, hueShift, effectsActive, clean, motionEnabled } from './register'
 
 const list = [
   { id: 'frontend@s', name: 'frontend', status: 'running', tools: 3, last: 'Bash', done: false },
@@ -995,4 +995,22 @@ test('centre box bounces up with happy eyes right after a subagent finishes', ()
   expect(headRow(at(1200))).toBe(rest)
   expect(text(at(1000))).toContain('^')
   expect(headRow(drawGraph(finished, 80, [], 1000, 0, false, 'retro', 20, { enabled: false }, 'head'))).toBe(rest)
+})
+
+test('a foreground codex exec box follows the log it redirects to', () => {
+  expect(logPathOf('D=/tmp/s/ship; sed -i x "$D/state.md"; codex exec -C . "do it" < /dev/null > "$D/codex-build.log" 2>&1')).toBe('/tmp/s/ship/codex-build.log')
+  expect(logPathOf('codex exec "x" 2>&1 | tee -a /tmp/a.log')).toBe('/tmp/a.log')
+  expect(logPathOf('codex exec "x" > /dev/null')).toBe(undefined)
+  expect(logPathOf('codex exec "x" > $UNSET/a.log')).toBe(undefined)
+  expect(logPathOf('codex exec "x"')).toBe(undefined)
+})
+
+test('plain codex exec logs show the latest command, message and final answer', () => {
+  const head = 'OpenAI Codex v0.165.0\nuser\nTask\ncodex\nI will read the pattern.\nexec\n'
+  const running = rawCodexProgress(`${head}\x1b[1m/bin/zsh -lc 'npx tsc --noEmit'\x1b[0m in /Users/x/repo\n`)
+  expect(running).toEqual({ last: 'Running ▸ npx tsc --noEmit', answer: undefined, finished: false })
+  const done = rawCodexProgress(`${head}/bin/zsh -lc ls in /r\n exited 0 in 9ms:\ncodex\nFiles written.\n\nNo tests run.\ntokens used\n29,051\nFiles written.\n`)
+  expect(done.finished).toBe(true)
+  expect(done.answer).toBe('Files written. No tests run.')
+  expect(done.last).toBe('Says ▸ Files written.')
 })
