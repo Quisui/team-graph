@@ -110,6 +110,7 @@ other mod uses it), then `/reload-plugins`.
 /team-graph --theme retro
 /team-graph --theme neon
 /team-graph --theme pulse
+/team-graph --pulse light
 /team-graph --robot head
 /team-graph --robot plain
 /team-graph --rows 17
@@ -160,6 +161,9 @@ working cards and the active count, a scrolling cyan→violet→magenta title, a
 the progress bar, glowing borders on working cards and the orchestrator, a faster blink on
 cards that need you, fading message trails, and new stream lines that arrive white and settle.
 With motion off (or `NO_MOTION`, or a short pane) it draws exactly like neon.
+`--pulse full` (the default) keeps every pulse effect moving at the fast rate even when no agent
+runs; `--pulse light` moves fast only while agents run and slows to a 150 ms tick when idle.
+The choice is kept for new sessions.
 
 `--robot head|plain` selects and persists the retro robot without toggling
 visibility; `--robot=head` also works. `head` is the default: a rounded white

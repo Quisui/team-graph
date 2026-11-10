@@ -1,5 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import type { Node } from '../types'
+import { harness } from './fake-engine'
 import { drawNeon, neonFits } from './neon'
 import type { NeonView } from './neon'
 import { along, arrive, glow, gradient, shimmer, SPINNERS, spinnerFrame } from './pulse'
@@ -162,4 +163,38 @@ test('neon keeps its name and two solid brand colours without effects', () => {
   expect(text([rows[0]])).toContain('TEAM GRAPH / NEON')
   expect(brand(rows).map(s => s.c)).toEqual(['#69E8FF', '#ED75E5'])
   expect(brand(rows).map(s => s.t)).toEqual(['◆ TEAM GRAPH', ' / NEON'])
+})
+
+test('--pulse picks full or light, keeps it for new sessions, and refuses anything else', async () => {
+  const writes: [string, unknown][] = []
+  const h = harness({ store: { set: async (key: string, value: unknown) => { writes.push([key, value]) } } })
+  await h.run('session.start')
+  expect((await h.run('command.run', { command: 'team-graph', args: '--pulse light' })).text).toContain('light')
+  expect(h.state('pulseMode')).toBe('light')
+  expect(writes).toContainEqual(['pulseMode', 'light'])
+  expect((await h.run('command.run', { command: 'team-graph', args: '--pulse fast' })).text).toBe('Use --pulse full or --pulse light.')
+  const next = harness({ store: { get: async (key: string) => key === 'pulseMode' ? 'light' : undefined } })
+  await next.run('session.start')
+  expect(next.state('pulseMode')).toBe('light')
+})
+
+test('idle pulse keeps moving: full on the fast timer, light on the slow tick; other themes stop', async () => {
+  const frames = async (look: string, mode?: string) => {
+    let now = 10000
+    const h = harness({ clock: { now: async () => now } })
+    await h.run('session.start')
+    await h.run('command.run', { command: 'team-graph', args: `--theme ${look}` })
+    if (mode) await h.run('command.run', { command: 'team-graph', args: `--pulse ${mode}` })
+    // no agents at all, and past the opening sweep: nothing is busy
+    now += 1000
+    await h.run('ui.render', { props: { bodyColumns: 100 }, viewport: { columns: 100, rows: 40 } })
+    const before = h.state('frame') ?? 0
+    await h.timers.get(16)!()
+    const fast = (h.state('frame') ?? 0) - before
+    await h.timers.get(150)!()
+    return { fast, slow: (h.state('frame') ?? 0) - before - fast }
+  }
+  expect(await frames('pulse')).toEqual({ fast: 1, slow: 0 })
+  expect(await frames('pulse', 'light')).toEqual({ fast: 0, slow: 1 })
+  expect(await frames('neon')).toEqual({ fast: 0, slow: 0 })
 })

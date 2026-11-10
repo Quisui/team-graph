@@ -7,6 +7,6 @@ export type Wait = { agent: string; call: string }
 
 declare module 'claude-code' {
   interface PluginState {
-    'team-graph': { nodes: Node[]; log: Msg[]; flights: Flight[]; frame: number; messageCount: number; times: number[]; shown: boolean; owner: { id: string; beat: number }; theme: string; robotStyle: string; graphRows: number; motion: boolean; openedAt: number; mainLast: string; mainAt: number; features: Features; usage: Usage; waits: Wait[]; modes: Record<string, string> }
+    'team-graph': { nodes: Node[]; log: Msg[]; flights: Flight[]; frame: number; messageCount: number; times: number[]; shown: boolean; owner: { id: string; beat: number }; theme: string; robotStyle: string; graphRows: number; motion: boolean; openedAt: number; mainLast: string; mainAt: number; features: Features; usage: Usage; waits: Wait[]; modes: Record<string, string>; pulseMode: string }
   }
 }

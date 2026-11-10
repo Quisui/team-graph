@@ -33,6 +33,9 @@ const theme = atom({ plugin: 'team-graph', key: 'theme' } as const, 'retro')
 const frame = atom({ plugin: 'team-graph', key: 'frame' } as const, 0)
 
 const motion = atom({ plugin: 'team-graph', key: 'motion' } as const, true)
+// pulse when nothing runs: full keeps every effect at the fast rate, light slows it to the 150 ms tick
+export const PULSE_MODES = ['full', 'light']
+const pulseMode = atom({ plugin: 'team-graph', key: 'pulseMode' } as const, 'full')
 // each extra can be switched with `/team-graph --<name> on|off`; all start on
 export const FEATURES = ['needs', 'tokens', 'reasons', 'limits'] as const
 const features = atom({ plugin: 'team-graph', key: 'features' } as const, { needs: true, tokens: true, reasons: true, limits: true })
@@ -487,6 +490,9 @@ let animating = false
 let fastMotion = false
 // pulse redraws at ~60 fps for as long as anything moves, not only during fades
 let smooth = false
+// whether some agent, fade or message is moving; pulse also animates without it
+let busy = false
+let pulseFull = true
 let lastLookup = -Infinity
 let teamFailures = 0
 let socket = ''
@@ -961,7 +967,8 @@ async function animate($: EngineInterface) {
   await pruneFlights($, now)
   // One final render reaches the exact endpoint even if no work remains.
   if (active || animating) await update($, frame, f => f + 1)
-  animating = active
+  busy = active
+  animating = active || smooth
 }
 
 async function openGraph($: EngineInterface) {
@@ -1058,7 +1065,7 @@ export function resetModuleState() {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'team-graph', description: 'Show or hide the agent graph; --theme classic|retro|neon|pulse, --rows N, --motion off|on, --robot head|plain, --needs|--tokens|--reasons|--limits on|off' })
+    await $.command.register({ name: 'team-graph', description: 'Show or hide the agent graph; --theme classic|retro|neon|pulse, --pulse full|light, --rows N, --motion off|on, --robot head|plain, --needs|--tokens|--reasons|--limits on|off' })
     $.ui.status(undefined)
     if (!motionEnvRead) {
       motionEnvRead = true
@@ -1066,6 +1073,8 @@ export const register: Register = on => {
     }
     const kept = await $.store.get('theme').catch(() => undefined)
     if (typeof kept === 'string' && THEMES.includes(kept) && kept !== await read($, theme)) await update($, theme, () => kept)
+    const keptPulse = await $.store.get('pulseMode').catch(() => undefined)
+    if (typeof keptPulse === 'string' && PULSE_MODES.includes(keptPulse) && keptPulse !== await read($, pulseMode)) await update($, pulseMode, () => keptPulse)
     const start = await $.clock.now()
     loadedAt = start
     paneOpen = await read($, shown)
@@ -1089,8 +1098,8 @@ export const register: Register = on => {
     // Idle callbacks return before any engine I/O; only finite transitions need fine frames.
     // ~30 fps for fades and the opening sweep, ~60 fps for pulse while anything moves; idle panes skip the work
     $.clock.every(33, async () => { if (paneOpen && fastMotion && !smooth && (await isOwner($, false))) await animate($) })
-    $.clock.every(16, async () => { if (paneOpen && smooth && (animating || fastMotion) && (await isOwner($, false))) await animate($) })
-    $.clock.every(150, async () => { if (paneOpen && animating && !smooth && (await isOwner($, false))) await animate($) })
+    $.clock.every(16, async () => { if (paneOpen && smooth && (busy || fastMotion || pulseFull) && (await isOwner($, false))) await animate($) })
+    $.clock.every(150, async () => { if (paneOpen && animating && (!smooth || !busy && !pulseFull) && (await isOwner($, false))) await animate($) })
     return next(e)
   })
 
@@ -1116,6 +1125,18 @@ export const register: Register = on => {
         await update($, frame, f => f + 1)
       }
       return { text: `${name[0].toUpperCase()}${name.slice(1)} ${value}.` }
+    }
+    // `--pulse full|light`: how pulse moves while no agent runs; kept for new sessions like the theme
+    const pulseMatch = /(?:^|\s)--pulse(?:[=\s]+(\S+))?/.exec(commandArgs)
+    if (pulseMatch) {
+      const pick = pulseMatch[1] ?? ''
+      if (!PULSE_MODES.includes(pick)) return { text: 'Use --pulse full or --pulse light.' }
+      if (await isOwner($)) {
+        await update($, pulseMode, () => pick)
+        await $.store.set('pulseMode', pick).catch(() => {})
+        await update($, frame, f => f + 1)
+      }
+      return { text: pick === 'full' ? 'Pulse full: every effect keeps moving at the fast rate, even with no agents.' : 'Pulse light: fast while agents run, a slow tick when idle.' }
     }
     const motionMatch = /(?:^|\s)--motion(?:[=\s]+(\S+))?/.exec(commandArgs)
     if (motionMatch) {
@@ -1351,8 +1372,10 @@ export const register: Register = on => {
     const now = await $.clock.now()
     const tick = enabled ? Math.floor(now / 150) : 0
     smooth = enabled && layoutOf(lookOf(await read($, theme))).fx
+    pulseFull = (await read($, pulseMode)) !== 'light'
     const effects = { enabled, opened: await read($, openedAt) }
-    animating = enabled && effectsActive(list, fl, now, effects.opened)
+    busy = enabled && effectsActive(list, fl, now, effects.opened)
+    animating = busy || smooth
     fastMotion = enabled && (effects.opened >= 0 && now - effects.opened < SWEEP_MS || list.some(n => isDone(n) && n.ended != null && now - n.ended < FADE_MS))
     const total = Math.max(0, (e.props.bodyColumns ?? e.viewport?.columns ?? 120) - 2)
     const hasTeam = list.some(n => n.id.endsWith('@team'))
