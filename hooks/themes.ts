@@ -5,7 +5,7 @@ import type { Node } from '../types'
 import { kindOf } from './status'
 import type { Kind } from './status'
 
-export const THEMES = ['classic', 'retro', 'neon']
+export const THEMES = ['classic', 'retro', 'neon', 'pulse']
 
 export function themeArg(args: string) {
   const m = /(?:^|\s)(?:--theme[=\s]+|-t\s+)?(\w+)\s*$/.exec(args.trim().toLowerCase())
@@ -50,12 +50,16 @@ export type Layout = {
   // pending agents' links stay muted until they start
   mutePending: boolean
   minRows: number; resizeLabel: string; resizeFill: string
+  // stacked: the neon dashboard (header, framed graph, event stream); fx: pulse's extra motion
+  stacked: boolean; fx: boolean
 }
-const BASE: Layout = { cardMax: 64, cardRows: 1, upper: false, activeWord: 'running', mutePending: false, minRows: 11, resizeLabel: 'k ▲ resize ▼ j', resizeFill: '─' }
+const BASE: Layout = { cardMax: 64, cardRows: 1, upper: false, activeWord: 'running', mutePending: false, minRows: 11, resizeLabel: 'k ▲ resize ▼ j', resizeFill: '─', stacked: false, fx: false }
 // neon cards hold the task and a status line; two card rows round the head need 15 rows
-const NEON_LAYOUT: Layout = { cardMax: 34, cardRows: 2, upper: true, activeWord: 'active', mutePending: true, minRows: 15, resizeLabel: '[k] ▲ RESIZE ▼ [j]', resizeFill: ' ' }
-export const layoutOf = (look: string) => look === 'neon' ? NEON_LAYOUT : BASE
+const NEON_LAYOUT: Layout = { cardMax: 34, cardRows: 2, upper: true, activeWord: 'active', mutePending: true, minRows: 15, resizeLabel: '[k] ▲ RESIZE ▼ [j]', resizeFill: ' ', stacked: true, fx: false }
+// pulse is neon with spinners, gradients and glow
+const PULSE_LAYOUT: Layout = { ...NEON_LAYOUT, fx: true }
+export const layoutOf = (look: string) => look === 'pulse' ? PULSE_LAYOUT : look === 'neon' ? NEON_LAYOUT : BASE
 
 // `c2ms` is the retro theme's old name, still found in saved state; any other unknown value always drew as classic.
 export const lookOf = (saved: string) => saved === 'c2ms' ? 'retro' : THEMES.includes(saved) ? saved : 'classic'
-export const paletteOf = (look: string): Palette | undefined => look === 'retro' ? RETRO : look === 'neon' ? NEON : undefined
+export const paletteOf = (look: string): Palette | undefined => look === 'retro' ? RETRO : look === 'neon' || look === 'pulse' ? NEON : undefined

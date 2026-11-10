@@ -64,3 +64,18 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## cli-spinners, gradient-string and chalk-animation
+
+The pulse theme borrows from three MIT-licensed packages, without depending on
+them:
+
+- Spinner frames (`dots`, `arc`, `halves`, `bounce`) copied from
+  [cli-spinners](https://github.com/sindresorhus/cli-spinners) by sindresorhus.
+- Per-character gradients after
+  [gradient-string](https://github.com/bokub/gradient-string) by bokub.
+- The pulse (glow), radar (shimmer) and rainbow (scrolling gradient) ideas
+  from [chalk-animation](https://github.com/bokub/chalk-animation) by bokub.
+
+They are rewritten in `hooks/pulse.ts` as pure functions of time on Claude
+Code's coloured text segments, so motion off simply passes a still clock.

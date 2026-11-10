@@ -25,7 +25,7 @@ const cell = (rows: Seg[][], x: number, y: number) => {
 }
 
 test('neon theme arguments preserve classic, retro and saved-theme compatibility', () => {
-  expect(THEMES).toEqual(['classic', 'retro', 'neon'])
+  expect(THEMES).toEqual(['classic', 'retro', 'neon', 'pulse'])
   for (const args of ['neon', '--theme neon', '--theme=neon', '-t neon']) expect(themeArg(args)).toBe('neon')
   for (const theme of THEMES) expect(lookOf(theme)).toBe(theme)
   expect(lookOf('c2ms')).toBe('retro')

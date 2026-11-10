@@ -30,12 +30,17 @@ progress bar, status-coloured cards round the orchestrator, and the event stream
 
 ![Neon theme with two finished Codex jobs and the event stream](docs/screenshots/neon-theme.png)
 
+Pulse theme (`/team-graph --theme pulse`): neon with motion while agents run, with spinners on
+working cards, a scrolling title gradient, a shimmer across the progress bar and glowing borders.
+
+![Pulse theme with three demo agents, two still running](docs/screenshots/pulse-theme.png)
+
 ## Features
 
 - Claude Code teams and subagents, including live tmux teammate activity.
 - Codex jobs and other AI CLIs launched through Bash: Gemini, OpenCode, Amp,
   Kimi, Copilot, and `claude -p`.
-- Classic, retro and neon themes; retro includes an animated robot head and gradient progress bar, neon a cyberpunk dashboard.
+- Classic, retro, neon and pulse themes; retro includes an animated robot head and gradient progress bar, neon a cyberpunk dashboard, pulse the same dashboard with more motion.
 - Message flights, completion flashes, per-agent timers, and an activity sparkline.
 - A 400 ms graph sweep, a 600 ms completion colour fade, and flowing hue on running lines.
 - Persisted visibility, theme, robot style, motion, and graph height. Idle effects stop updating.
@@ -104,6 +109,7 @@ other mod uses it), then `/reload-plugins`.
 /team-graph --theme classic
 /team-graph --theme retro
 /team-graph --theme neon
+/team-graph --theme pulse
 /team-graph --robot head
 /team-graph --robot plain
 /team-graph --rows 17
@@ -149,6 +155,11 @@ three brightness levels: newest normal, middle dim, oldest dimmer.
 status-coloured cards and cyan links, and an event stream. Narrow panes, or teams too large for
 readable cards, show the agents as a list. The resize keys sit on its last row. The theme choice
 is kept for new sessions.
+`pulse` is neon with more motion while agents run: spinner frames from cli-spinners on
+working cards and the active count, a scrolling cyan→violet→magenta title, a shimmer across
+the progress bar, glowing borders on working cards and the orchestrator, a faster blink on
+cards that need you, fading message trails, and new stream lines that arrive white and settle.
+With motion off (or `NO_MOTION`, or a short pane) it draws exactly like neon.
 
 `--robot head|plain` selects and persists the retro robot without toggling
 visibility; `--robot=head` also works. `head` is the default: a rounded white
@@ -160,7 +171,7 @@ nothing running gives red `×   ×` eyes. Motion reduction disables glancing and
 blinking. `plain` keeps the original `[•_•]` walking track and `\[^_^]/ All done`
 cheer. Classic rendering is unaffected.
 
-Theme aliases: `-t retro`, `--theme=retro`, or a bare `retro` / `classic` / `neon`.
+Theme aliases: `-t retro`, `--theme=retro`, or a bare `retro` / `classic` / `neon` / `pulse`.
 Use `k` to shrink the graph and `j` to grow it when the resize divider appears.
 The fullscreen layout puts the bus beside the graph; narrower layouts put it below.
 

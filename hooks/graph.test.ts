@@ -678,14 +678,14 @@ test('animation renders the final frame, does no idle engine I/O, and keeps moti
   await start()
   await command()
   expect(values.get(key('openedAt'))).toBe(1000)
-  await timers.get(40)!()
+  await timers.get(33)!()
   now = 1600
   const frame = Number(values.get(key('frame')))
-  await timers.get(40)!()
+  await timers.get(33)!()
   expect(values.get(key('frame'))).toBe(frame + 1)
   const idleReads = reads, idleWrites = writes
   now = 2000
-  await timers.get(40)!()
+  await timers.get(33)!()
   await timers.get(150)!()
   expect(reads).toBe(idleReads)
   expect(writes).toBe(idleWrites)
@@ -694,7 +694,7 @@ test('animation renders the final frame, does no idle engine I/O, and keeps moti
   expect(values.get(key('motion'))).toBe(false)
   const frozenFrame = values.get(key('frame'))
   const offReads = reads
-  await timers.get(40)!()
+  await timers.get(33)!()
   await timers.get(150)!()
   expect(values.get(key('frame'))).toBe(frozenFrame)
   expect(reads).toBe(offReads)
@@ -819,12 +819,12 @@ test('pane rendering greys the full clickable divider and freezes short viewport
   expect(JSON.stringify(frozen)).toContain('^   ^')
   const before = values.get(key('frame'))
   now = 1300
-  await timers.get(40)!()
+  await timers.get(33)!()
   await timers.get(150)!()
   expect(values.get(key('frame'))).toBe(before)
   expect(snapshot(await render(80, 19))).toBe(snapshot(frozen))
   await render(80, 20)
-  await timers.get(40)!()
+  await timers.get(33)!()
   expect(values.get(key('frame'))).not.toBe(before)
 })
 

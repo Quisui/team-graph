@@ -1,7 +1,8 @@
-// Neon theme layout: header, session progress, the graph in a frame and the event stream.
-// The graph itself comes from drawGraph (look 'neon'); this module only arranges what surrounds it.
+// Neon and pulse theme layout: header, session progress, the graph in a frame and the event stream.
+// The graph itself comes from drawGraph; this module only arranges what surrounds it.
 import type { Msg, Node } from '../types'
 import { fadeColor } from './color'
+import { arrive, glow, gradient, shimmer, spinnerFrame } from './pulse'
 import { isDone, isFailed, kindOf, LEAD } from './status'
 import type { Kind } from './status'
 import { layoutOf, NEON, toneOf } from './themes'
@@ -65,15 +66,21 @@ function frame(title: Seg[], note: Seg[], body: Seg[][], W: number): Seg[][] {
   ]
 }
 
-function header(list: Node[], W: number, now: number): Seg[][] {
+// fx: pulse's motion, on only while motion is allowed
+type Fx = { on: boolean; tick: number }
+
+function header(list: Node[], W: number, now: number, theme: string, fx: Fx): Seg[][] {
   const active = list.filter(n => !isDone(n) && n.status === 'running').length
   const done = list.filter(isDone).length
   // elapsed time of the current burst of work, as the bus shows it: since the earliest unfinished agent started
   const open = list.filter(n => !isDone(n))
   const since = Math.min(...open.map(n => n.since ?? now), now)
-  const brand: Seg[] = [{ t: '◆ TEAM GRAPH', c: NEON.cyan, b: true }, { t: ' / NEON', c: NEON.magenta, b: true }]
+  const name = ` / ${theme.toUpperCase()}`
+  const brand: Seg[] = fx.on
+    ? gradient('◆ TEAM GRAPH' + name, [NEON.cyan, NEON.violet, NEON.magenta, NEON.cyan], now / 1200, true)
+    : [{ t: '◆ TEAM GRAPH', c: NEON.cyan, b: true }, { t: name, c: NEON.magenta, b: true }]
   const counts: Seg[] = [
-    { t: `● ${active} ACTIVE`, c: NEON.done },
+    { t: `${fx.on && active ? spinnerFrame('arc', Math.floor(now / 100)) : '●'} ${active} ACTIVE`, c: NEON.done },
     { t: `  ◆ ${done}/${list.length} DONE`, c: NEON.magenta },
     ...(open.length ? [{ t: `  ⏱ ${clock(now - since)}`, c: NEON.muted }] : []),
   ]
@@ -85,7 +92,7 @@ function header(list: Node[], W: number, now: number): Seg[][] {
     [{ t: '' }],
     spread([{ t: 'SESSION PROGRESS ', c: NEON.muted }, { t: `${pct.toFixed(1)}%`, b: true }], [{ t: `${list.length} NODES CONNECTED`, c: NEON.magenta }], W),
     // violet→magenta across the done share, the panel colour for the rest
-    [...Array.from({ length: filled }, (_, i) => ({ t: '━', c: fadeColor(NEON.violet, NEON.magenta, filled > 1 ? Math.min(0.9999, i / (filled - 1)) : 0) })),
+    [...(fx.on ? (s: Seg[]) => shimmer(s, now) : (s: Seg[]) => s)(Array.from({ length: filled }, (_, i) => ({ t: '━', c: fadeColor(NEON.violet, NEON.magenta, filled > 1 ? Math.min(0.9999, i / (filled - 1)) : 0) }))),
       { t: '━'.repeat(W - filled), c: NEON.panel }],
   ] as Seg[][]).map(r => fit(r, W))
 }
@@ -114,7 +121,7 @@ function eventOf(m: Msg, i: number, msgs: Msg[], list: Node[]) {
   return { icon: '›', c: NEON.log }
 }
 
-function stream(list: Node[], msgs: Msg[], W: number, lines: number): Seg[][] {
+function stream(list: Node[], msgs: Msg[], W: number, lines: number, now: number, fx: Fx): Seg[][] {
   const time = W >= 50
   const stamp = (at?: number): Seg[] => time ? [{ t: at == null ? ' '.repeat(10) : new Date(at).toTimeString().slice(0, 8) + '  ', c: NEON.muted }] : []
   const name = (who: string) => LEAD.includes(who) ? 'Main' : who
@@ -128,11 +135,13 @@ function stream(list: Node[], msgs: Msg[], W: number, lines: number): Seg[][] {
   })
   const said = msgs.map((m, i) => {
     const e = eventOf(m, i, msgs, list)
+    // pulse: a new line arrives white and settles into its colour
+    const tint = (c: string) => fx.on ? arrive(c, now - m.at) : c
     return { at: m.at, row: [
       ...stamp(m.at),
-      { t: e.icon + ' ', c: e.c, b: true },
+      { t: e.icon + ' ', c: tint(e.c), b: true },
       { t: name(m.from), b: true }, { t: ' → ', c: NEON.muted }, { t: name(m.to), b: true },
-      { t: ' ' + clean(m.text).replace(/\s+/g, ' '), c: e.c === NEON.log ? NEON.muted : e.c },
+      { t: ' ' + clean(m.text).replace(/\s+/g, ' '), c: tint(e.c === NEON.log ? NEON.muted : e.c) },
     ] }
   })
   const events = [...said, ...ended].sort((x, y) => x.at - y.at)
@@ -149,17 +158,20 @@ export type NeonView = {
   // drawGraph's rows at W - 4 columns, or undefined to list the agents instead
   graph?: Seg[][]
   listRows: number; busLines: number; live: boolean; spin: string
+  // the theme's name for the header, and whether pulse's motion runs this frame
+  theme?: string; fx?: boolean; tick?: number
 }
 
 export function drawNeon(v: NeonView): Seg[][] {
   const { list, msgs, W, now } = v
   const inner = W - 4
-  const live: Seg[] = v.live ? [{ t: 'LIVE ', c: NEON.muted }, { t: '●', c: NEON.done }] : [{ t: 'STATIC', c: NEON.muted }]
+  const fx = { on: !!v.fx, tick: v.tick ?? 0 }
+  const live: Seg[] = v.live ? [{ t: 'LIVE ', c: NEON.muted }, { t: '●', c: fx.on ? glow(NEON.done, now, 600, 0.7) : NEON.done }] : [{ t: 'STATIC', c: NEON.muted }]
   const topology = v.graph ?? agentList(list, inner, now, v.listRows, v.spin)
   return [
-    ...header(list, W, now),
+    ...header(list, W, now, v.theme ?? 'neon', fx),
     fit([], W),
     ...frame([{ t: v.graph ? `NETWORK TOPOLOGY${v.live ? ' / LIVE' : ''}` : 'AGENTS', c: NEON.muted }], live, topology, W),
-    ...frame([{ t: '▤ EVENT STREAM', c: NEON.cyan, b: true }], [{ t: `${v.count} messages${v.extra}`, c: NEON.muted }], stream(list, msgs, inner, v.busLines), W),
+    ...frame([{ t: '▤ EVENT STREAM', c: NEON.cyan, b: true }], [{ t: `${v.count} messages${v.extra}`, c: NEON.muted }], stream(list, msgs, inner, v.busLines, now, fx), W),
   ]
 }

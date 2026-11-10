@@ -9,6 +9,7 @@ import { fadeColor, hueShift } from './color'
 import { isDone, isPending, LEAD } from './status'
 import { layoutOf, lookOf, NEON, paletteOf, RETRO, THEMES, themeArg, toneOf } from './themes'
 import { drawNeon, NEON_GRAPH_MIN, neonFits, neonState } from './neon'
+import { along, glow, spinnerFrame } from './pulse'
 
 export { cap, clean, clip, displayWidth, tokensText } from './text'
 export type { Seg } from './text'
@@ -127,8 +128,10 @@ const GLYPH: Record<string, string> = {
 export function drawGraph(list: Node[], W: number, fl: Flight[] = [], now = 0, tick = 0, hasTeam = true, look = 'classic', height = GRAPH_ROWS, effects: { enabled: boolean; opened?: number } = { enabled: false }, style = 'head', main: { last: string; at: number } = { last: '', at: 0 }): Seg[][] {
   const pal = paletteOf(look)
   const c2 = !!pal
-  const neon = look === 'neon'
   const lay = layoutOf(look)
+  const neon = lay.stacked
+  // pulse: spinners and glow, only while motion runs
+  const fx = lay.fx && effects.enabled
   const say = (t: string) => lay.upper ? t.toUpperCase() : t
   const narrow = W < 70
   const head = c2 && style === 'head'
@@ -314,7 +317,8 @@ export function drawGraph(list: Node[], W: number, fl: Flight[] = [], now = 0, t
       const i = Math.round(p * (pts.length - 1))
       for (const [d, ch] of [[4, '∙'], [2, '•'], [0, '●']] as const) {
         const q = pts[i - d]
-        if (q) soft(q.x, q.y, ch, c, true)
+        // pulse: the trail fades from the message colour to magenta behind the head dot
+        if (q) soft(q.x, q.y, ch, fx ? along([c, NEON.magenta], d / 4) : c, true)
       }
     }
   }
@@ -336,10 +340,12 @@ export function drawGraph(list: Node[], W: number, fl: Flight[] = [], now = 0, t
     const state = (failed ? '✗ ' + n.status : pending ? '○ ' + n.status : waiting ? '⚑ needs you' : done ? (n.status === 'idle' ? '✓ idle' : '✓ done') : `● ${spin[tick % spin.length]} ${n.external ? secs(now - (n.since ?? now)) : n.tools}`) + (n.external && !done || waiting ? '' : took) + tokens
     const body = n.reason ? pretty(clean(n.reason)) : !n.last || n.last === 'starting' ? 'Starting' : pretty(clean(n.last))
     if (pal) {
-      const tone = toneFrom(toneOf(pal, n), pal.run)
+      const still = toneFrom(toneOf(pal, n), pal.run)
+      // pulse: working cards breathe out of step (phase by position), a waiting one blinks faster
+      const tone = fx && waiting ? glow(still, now, 500, 0.5) : fx && !done && n.status === 'running' ? glow(still, now + x * 40) : still
       if (neon) {
         // neon card: `● name` on the border, the task inside, then the status and a metric on their own line
-        const s = neonState(n, now, effects.enabled ? spin[tick % spin.length] : '●')
+        const s = neonState(n, now, fx ? spinnerFrame('dots', Math.floor(now / 80)) : effects.enabled ? spin[tick % spin.length] : '●')
         const card = box(x, y, w, `${s.glyph} ${n.external ? '⬡ ' : ''}${n.name}`, '', body, tone, NEON.log, landed(n.name), tone, '')
         const room = card.w - 4
         put(card.x + 2, y + 1, clip(s.label, room), tone, true)
@@ -348,7 +354,7 @@ export function drawGraph(list: Node[], W: number, fl: Flight[] = [], now = 0, t
     } else
       box(x, y, w, n.external ? `⬡ ${cap(n.name)}` : cap(n.name), state, body, toneFrom(failed ? 'red' : waiting ? 'yellow' : done ? 'gray' : c), done ? toneFrom('gray', 'white') : undefined, landed(n.name), toneFrom(failed ? 'red' : waiting ? 'yellow' : done ? 'green' : c))
   }
-  const lead = box(cx, cy, leadW, leadTitle, '', leadBody, pal ? pal.hdr : 'cyan', pal ? pal.log : all ? 'green' : 'cyan', LEAD.some(landed), undefined, leadBody2, tallHead ? HEAD_BOTTOM : undefined)
+  const lead = box(cx, cy, leadW, leadTitle, '', leadBody, pal ? fx && running ? glow(pal.hdr, now, 1200, 0.3) : pal.hdr : 'cyan', pal ? pal.log : all ? 'green' : 'cyan', LEAD.some(landed), undefined, leadBody2, tallHead ? HEAD_BOTTOM : undefined)
   if (head) {
     if (tallHead) {
       put(lead.x + 2, cy, HEAD_TOP, pal!.head, true)
@@ -479,6 +485,8 @@ const toldFailed = new Set<string>()
 let paneOpen = false
 let animating = false
 let fastMotion = false
+// pulse redraws at ~60 fps for as long as anything moves, not only during fades
+let smooth = false
 let lastLookup = -Infinity
 let teamFailures = 0
 let socket = ''
@@ -1050,7 +1058,7 @@ export function resetModuleState() {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'team-graph', description: 'Show or hide the agent graph; --theme classic|retro|neon, --rows N, --motion off|on, --robot head|plain, --needs|--tokens|--reasons|--limits on|off' })
+    await $.command.register({ name: 'team-graph', description: 'Show or hide the agent graph; --theme classic|retro|neon|pulse, --rows N, --motion off|on, --robot head|plain, --needs|--tokens|--reasons|--limits on|off' })
     $.ui.status(undefined)
     if (!motionEnvRead) {
       motionEnvRead = true
@@ -1079,8 +1087,10 @@ export const register: Register = on => {
       if (paneOpen && (await read($, nodes)).some(n => !isDone(n))) await update($, frame, f => f + 1)
     })
     // Idle callbacks return before any engine I/O; only finite transitions need fine frames.
-    $.clock.every(40, async () => { if (paneOpen && fastMotion && (await isOwner($, false))) await animate($) })
-    $.clock.every(150, async () => { if (paneOpen && animating && (await isOwner($, false))) await animate($) })
+    // ~30 fps for fades and the opening sweep, ~60 fps for pulse while anything moves; idle panes skip the work
+    $.clock.every(33, async () => { if (paneOpen && fastMotion && !smooth && (await isOwner($, false))) await animate($) })
+    $.clock.every(16, async () => { if (paneOpen && smooth && (animating || fastMotion) && (await isOwner($, false))) await animate($) })
+    $.clock.every(150, async () => { if (paneOpen && animating && !smooth && (await isOwner($, false))) await animate($) })
     return next(e)
   })
 
@@ -1340,6 +1350,7 @@ export const register: Register = on => {
     const enabled = motionEnabled(await read($, motion), viewportRows, noMotion)
     const now = await $.clock.now()
     const tick = enabled ? Math.floor(now / 150) : 0
+    smooth = enabled && layoutOf(lookOf(await read($, theme))).fx
     const effects = { enabled, opened: await read($, openedAt) }
     animating = enabled && effectsActive(list, fl, now, effects.opened)
     fastMotion = enabled && (effects.opened >= 0 && now - effects.opened < SWEEP_MS || list.some(n => isDone(n) && n.ended != null && now - n.ended < FADE_MS))
@@ -1353,16 +1364,22 @@ export const register: Register = on => {
     let rows: Seg[][]
     let divider = -1
     let H = GRAPH_ROWS
-    if (look === 'neon') {
-      // neon stacks everything (header, graph, event stream) at any width; the last row holds the resize keys
+    if (layoutOf(look).stacked) {
+      // neon and pulse stack everything (header, graph, event stream) at any width; the last row holds the resize keys
       const viewport = e.viewport?.rows ?? 30
       const graphMode = neonFits(total, list.length)
       // default height is the compact graph (two card rows round the orchestrator); k/j or --rows change it
       H = graphMode ? clamp((await read($, graphRows)) || NEON_GRAPH_MIN, NEON_GRAPH_MIN, 40) : 12
       // 11 fixed rows: header 6, two frame borders each, the divider; the stream takes what is left
       const busLines = Math.max(1, Math.min(60, viewport - H - 11))
-      const graph = graphMode ? drawGraph(list, total - 4, enabled ? fl : [], now, tick, hasTeam, look, H, effects, style, mainNow) : undefined
-      rows = drawNeon({ list, msgs, W: total, now, count: busArgs[0], extra, graph, listRows: H, busLines, live: enabled, spin: enabled ? NEON.spin[tick % NEON.spin.length] : '●' })
+      const fx = enabled && layoutOf(look).fx
+      // everything time-based comes from `t`, so the same inputs can be drawn again at a later moment
+      const draw = (t: number) => {
+        const tk = enabled ? Math.floor(t / 150) : 0
+        const graph = graphMode ? drawGraph(list, total - 4, enabled ? fl : [], t, tk, hasTeam, look, H, effects, style, mainNow) : undefined
+        return drawNeon({ list, msgs, W: total, now: t, count: busArgs[0], extra, graph, listRows: H, busLines, live: enabled, spin: !enabled ? '●' : fx ? spinnerFrame('dots', Math.floor(t / 80)) : NEON.spin[tk % NEON.spin.length], theme: look, fx, tick: tk })
+      }
+      rows = draw(now)
       // the resize keys only change the graph's height, so a list has none
       if (graphMode) {
         divider = rows.length
@@ -1394,32 +1411,34 @@ export const register: Register = on => {
 
     if (look === 'retro') rows = retro(rows)
 
+    // keys sit next to their arrows; the left half (k ▲) shrinks, the right half (▼ j) grows
+    const resizeRow = () => {
+      const { resizeLabel, resizeFill: fill, minRows } = layoutOf(look)
+      const label = clip(resizeLabel, total)
+      const split = label.includes('▼') ? label.indexOf('▼') : label.length
+      const spare = Math.max(0, total - displayWidth(label))
+      const left = fill.repeat(Math.floor(spare / 2)) + label.slice(0, split)
+      const right = label.slice(split) + fill.repeat(Math.ceil(spare / 2))
+      const smaller = () => update($, graphRows, () => Math.max(minRows, H - 2))
+      const bigger = () => update($, graphRows, () => Math.min(40, H + 2))
+      return (
+        <Box flexDirection="row" width={total} overflow="hidden">
+          <Button key="graph-smaller-line" label={left} plain dimColor onPress={smaller} />
+          <Button key="graph-bigger-line" label={right} plain dimColor onPress={bigger} />
+          {/* Native hotkey hints use the theme accent; clip those hints to keep the divider neutral. */}
+          <Box width={0} height={0} overflow="hidden">
+            <Button key="graph-smaller" label="" hotkey="k" plain dimColor onPress={smaller} />
+            <Button key="graph-bigger" label="" hotkey="j" plain dimColor onPress={bigger} />
+          </Box>
+        </Box>
+      )
+    }
+
     return (
       <Box flexDirection="column">
         {rows.map((segs, i) => {
-          const textOf = (ss: Seg[]) => <Text wrap="truncate">{ss.map(sg => (sg.c || sg.b || sg.d ? <Text color={sg.c} bold={!!sg.b} dimColor={!!sg.d}>{clean(sg.t)}</Text> : clean(sg.t)))}</Text>
-          const line = textOf(segs)
-          if (i !== divider) return line
-          // keys sit next to their arrows; the left half (k ▲) shrinks, the right half (▼ j) grows
-          const { resizeLabel, resizeFill: fill, minRows } = layoutOf(look)
-          const label = clip(resizeLabel, total)
-          const split = label.includes('▼') ? label.indexOf('▼') : label.length
-          const spare = Math.max(0, total - displayWidth(label))
-          const left = fill.repeat(Math.floor(spare / 2)) + label.slice(0, split)
-          const right = label.slice(split) + fill.repeat(Math.ceil(spare / 2))
-          const smaller = () => update($, graphRows, () => Math.max(minRows, H - 2))
-          const bigger = () => update($, graphRows, () => Math.min(40, H + 2))
-          return (
-            <Box flexDirection="row" width={total} overflow="hidden">
-              <Button key="graph-smaller-line" label={left} plain dimColor onPress={smaller} />
-              <Button key="graph-bigger-line" label={right} plain dimColor onPress={bigger} />
-              {/* Native hotkey hints use the theme accent; clip those hints to keep the divider neutral. */}
-              <Box width={0} height={0} overflow="hidden">
-                <Button key="graph-smaller" label="" hotkey="k" plain dimColor onPress={smaller} />
-                <Button key="graph-bigger" label="" hotkey="j" plain dimColor onPress={bigger} />
-              </Box>
-            </Box>
-          )
+          if (i === divider) return resizeRow()
+          return <Text wrap="truncate">{segs.map(sg => (sg.c || sg.b || sg.d ? <Text color={sg.c} bold={!!sg.b} dimColor={!!sg.d}>{clean(sg.t)}</Text> : clean(sg.t)))}</Text>
         })}
       </Box>
     )
