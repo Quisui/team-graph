@@ -20,6 +20,7 @@ export function fakeEngine(overrides: any = {}, storage: { values?: Map<string, 
     fs: { list: async () => [], read: async () => { throw new Error('Missing file') }, stat: async () => { throw new Error('Missing metadata') }, write: async () => {} },
     process: { run: async () => ({ stdout: '', exitCode: 1 }) },
     command: { register: async () => {} },
+    store: { get: async () => undefined, set: async () => {} },
     ui: { status: () => {}, open: async () => {}, close: async () => {}, toast: () => {}, resolve: () => ({ Box: 'Box', Text: 'Text', Button: 'Button' }) },
   }
   return Object.fromEntries(Object.entries(defaults).map(([key, value]) => [key, { ...value, ...overrides[key] }])) as any

@@ -456,7 +456,8 @@ test('the theme can be picked with a flag or a bare word', () => {
   expect(themeArg('-t classic')).toBe('classic')
   expect(themeArg('retro')).toBe('retro')
   expect(themeArg('')).toBe(undefined)
-  expect(themeArg('--theme neon')).toBe(undefined)
+  expect(themeArg('--theme neon')).toBe('neon')
+  expect(themeArg('--theme vapor')).toBe(undefined)
 })
 
 test('retro theme colours boxes by state and shows a gradient progress bar', () => {

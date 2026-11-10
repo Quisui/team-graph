@@ -25,12 +25,17 @@ the busiest rate-limit window, next to the message count and run time.
 
 ![Bus title showing session cost and rate-limit use](docs/screenshots/bus-cost-limit.png)
 
+Neon theme (`/team-graph --theme neon`): header with active and done counts, the session
+progress bar, status-coloured cards round the orchestrator, and the event stream.
+
+![Neon theme with two finished Codex jobs and the event stream](docs/screenshots/neon-theme.png)
+
 ## Features
 
 - Claude Code teams and subagents, including live tmux teammate activity.
 - Codex jobs and other AI CLIs launched through Bash: Gemini, OpenCode, Amp,
   Kimi, Copilot, and `claude -p`.
-- Classic and retro themes; retro includes an animated robot head and gradient progress bar.
+- Classic, retro and neon themes; retro includes an animated robot head and gradient progress bar, neon a cyberpunk dashboard.
 - Message flights, completion flashes, per-agent timers, and an activity sparkline.
 - A 400 ms graph sweep, a 600 ms completion colour fade, and flowing hue on running lines.
 - Persisted visibility, theme, robot style, motion, and graph height. Idle effects stop updating.
@@ -98,6 +103,7 @@ other mod uses it), then `/reload-plugins`.
 /team-graph
 /team-graph --theme classic
 /team-graph --theme retro
+/team-graph --theme neon
 /team-graph --robot head
 /team-graph --robot plain
 /team-graph --rows 17
@@ -139,6 +145,10 @@ interrupted ends as `stopped`, not failed. A run with failures ends with
 three brightness levels: newest normal, middle dim, oldest dimmer.
 
 `retro` is the default theme (state colours, gradient progress bar, robot head); `classic` colours each agent instead.
+`neon` stacks a header (active, done, elapsed), the session progress bar, the graph with
+status-coloured cards and cyan links, and an event stream. Narrow panes, or teams too large for
+readable cards, show the agents as a list. The resize keys sit on its last row. The theme choice
+is kept for new sessions.
 
 `--robot head|plain` selects and persists the retro robot without toggling
 visibility; `--robot=head` also works. `head` is the default: a rounded white
@@ -150,7 +160,7 @@ nothing running gives red `×   ×` eyes. Motion reduction disables glancing and
 blinking. `plain` keeps the original `[•_•]` walking track and `\[^_^]/ All done`
 cheer. Classic rendering is unaffected.
 
-Theme aliases: `-t retro`, `--theme=retro`, or a bare `retro` / `classic`.
+Theme aliases: `-t retro`, `--theme=retro`, or a bare `retro` / `classic` / `neon`.
 Use `k` to shrink the graph and `j` to grow it when the resize divider appears.
 The fullscreen layout puts the bus beside the graph; narrower layouts put it below.
 

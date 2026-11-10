@@ -3,6 +3,17 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Features, Flight, Msg, Node, Usage, Wait } from '../types'
 import { easeOutCirc, easeInOutCubic } from './easing'
+import { cap, clean, clip, displayWidth, pad, secs, tokensText } from './text'
+import type { Seg } from './text'
+import { fadeColor, hueShift } from './color'
+import { isDone, isPending, LEAD } from './status'
+import { layoutOf, lookOf, NEON, paletteOf, RETRO, THEMES, themeArg, toneOf } from './themes'
+import { drawNeon, NEON_GRAPH_MIN, neonFits, neonState } from './neon'
+
+export { cap, clean, clip, displayWidth, tokensText } from './text'
+export type { Seg } from './text'
+export { fadeColor, hueShift } from './color'
+export { THEMES, themeArg } from './themes'
 
 const nodes = atom({ plugin: 'team-graph', key: 'nodes' } as const, [])
 const log = atom({ plugin: 'team-graph', key: 'log' } as const, [])
@@ -47,12 +58,7 @@ const clamp = (n: number, min: number, max: number) => Math.min(max, Math.max(mi
 const lastCodexAnswer = (raw: string) => raw.split('\n').filter(l => l.startsWith(CODEX_ANSWER)).at(-1)?.slice(CODEX_ANSWER.length)
 const PALETTE = ['blue', 'green', 'yellow', 'magenta', 'red', 'cyan']
 const SPIN = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
-const LEAD = ['team-lead', 'orchestrator', 'main', 'lead']
 
-const secs = (ms: number) => {
-  const t = Math.max(0, Math.round(ms / 1000))
-  return t < 60 ? `${t}s` : `${Math.floor(t / 60)}m${String(t % 60).padStart(2, '0')}s`
-}
 // Messages per 5 s bucket over the last minute, as a sparkline.
 export const spark = (times: number[], now: number) => {
   const bars = '▁▂▃▄▅▆▇█'
@@ -64,35 +70,10 @@ export const spark = (times: number[], now: number) => {
   const max = Math.max(1, ...b)
   return b.map(v => (v ? bars[Math.min(7, Math.ceil((v / max) * 7))] : '▁')).join('')
 }
-// ponytail: code-point widths; use grapheme segmentation if combining sequences need exact layout.
-export const displayWidth = (s: string) => [...s].reduce((w, ch) => {
-  const c = ch.codePointAt(0)!
-  return w + (/\p{Emoji_Presentation}/u.test(ch) || c >= 0x1100 && (c <= 0x115f || c === 0x2329 || c === 0x232a ||
-    (c >= 0x2e80 && c <= 0xa4cf && c !== 0x303f) || (c >= 0xac00 && c <= 0xd7a3) ||
-    (c >= 0xf900 && c <= 0xfaff) || (c >= 0xfe10 && c <= 0xfe6f) ||
-    (c >= 0xff01 && c <= 0xff60) || (c >= 0xffe0 && c <= 0xffe6) ||
-    (c >= 0x1f000 && c <= 0x1faff) || (c >= 0x20000 && c <= 0x3fffd)) ? 2 : 1)
-}, 0)
-export const clip = (s: string, n: number) => {
-  if (n <= 0) return ''
-  if (displayWidth(s) <= n) return s
-  let out = ''
-  let width = 0
-  for (const ch of s) {
-    width += displayWidth(ch)
-    if (width > n - 1) break
-    out += ch
-  }
-  return out + '…'
-}
-const pad = (s: string, n: number) => s + ' '.repeat(Math.max(0, n - displayWidth(s)))
-const isPending = (n: Node) => n.status === 'pending' || n.status === 'idle' && (!n.done || n.since == null && !n.tools && !n.last)
-const isDone = (n: Node) => !isPending(n) && (n.done || ['completed', 'failed', 'killed', 'idle'].includes(n.status))
 // Agent ids look like `frontend@session-…`; tool.call and agent.list may spell them differently.
 const same = (n: Pick<Node, 'id' | 'name'>, id: string) => n.id === id || n.name === id.split('@')[0] || n.id.split('@')[0] === id
 // fields the hooks add that a rebuild from agent.list or team files must keep
 const extras = (p?: Node): Partial<Node> => p ? { ...(p.tokens != null && { tokens: p.tokens }), ...(p.answer && { answer: p.answer }) } : {}
-export const tokensText = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k tok` : `${n} tok`
 // what a box may show, per the switched-on extras: drawing code reads only these fields
 export const withFeatures = (n: Node, show: Features, waiting: Wait[] = []): Node => {
   const { waiting: _, tokens, reason, ...rest } = n
@@ -123,14 +104,8 @@ export const colorOf = (list: Node[], name: string) => {
 }
 
 type Cell = { ch: string; c?: string; b?: boolean; line?: boolean }
-export type Seg = { t: string; c?: string; b?: boolean; d?: boolean }
 
-// Text from messages, logs and panes is untrusted: drop ANSI/OSC escapes and other control characters.
-export const clean = (s: string) =>
-  String(s).replace(/\x1b\[[0-?]*[ -\/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-_]|[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '')
 
-// Names are drawn with a capital first letter; the stored name stays as is (matching relies on it).
-export const cap = (name: string) => (name ? name[0].toUpperCase() + name.slice(1) : name)
 
 export const pretty = (s: string) => {
   const m = /^(\w+)\((.*?)\)?$/.exec(s)
@@ -150,7 +125,11 @@ const GLYPH: Record<string, string> = {
 // Each agent joins the orchestrator by a right-angled dashed line; messages travel along it.
 // ponytail: two rows only; larger teams need a taller pane to retain long names.
 export function drawGraph(list: Node[], W: number, fl: Flight[] = [], now = 0, tick = 0, hasTeam = true, look = 'classic', height = GRAPH_ROWS, effects: { enabled: boolean; opened?: number } = { enabled: false }, style = 'head', main: { last: string; at: number } = { last: '', at: 0 }): Seg[][] {
-  const c2 = look === 'retro'
+  const pal = paletteOf(look)
+  const c2 = !!pal
+  const neon = look === 'neon'
+  const lay = layoutOf(look)
+  const say = (t: string) => lay.upper ? t.toUpperCase() : t
   const narrow = W < 70
   const head = c2 && style === 'head'
   // the head always draws as a box; narrow panes get a 7-column head with eyes one space apart
@@ -163,7 +142,7 @@ export function drawGraph(list: Node[], W: number, fl: Flight[] = [], now = 0, t
   const eyeSpan = 2 + gap.length
   const eyeHome = Math.floor((IW - eyeSpan) / 2)
   if (!effects.enabled) tick = 0
-  const spin = c2 ? C2.spin : SPIN
+  const spin = pal ? pal.spin : SPIN
   const H = Math.max(7, height)
   const grid: Cell[][] = Array.from({ length: H }, () => Array.from({ length: W }, () => ({ ch: ' ' })))
   const put = (x: number, y: number, s: string, c?: string, b?: boolean) => {
@@ -226,9 +205,9 @@ export function drawGraph(list: Node[], W: number, fl: Flight[] = [], now = 0, t
   const row = (ns: Node[], y: number) => ns.map((n, i) => {
     const left = Math.floor(W * i / ns.length)
     const right = Math.floor(W * (i + 1) / ns.length)
-    return { n, x: Math.floor((left + right) / 2), y, w: Math.min(64, right - left - 1) }
+    return { n, x: Math.floor((left + right) / 2), y, w: Math.min(lay.cardMax, right - left - 1) }
   })
-  const spots = [...row(top, 1), ...row(bottom, H - 2)].filter(s => s.w >= 4)
+  const spots = [...row(top, 1), ...row(bottom, H - 1 - lay.cardRows)].filter(s => s.w >= 4)
 
   const doneCount = list.filter(isDone).length
   const all = list.length > 0 && doneCount === list.length
@@ -249,19 +228,25 @@ export function drawGraph(list: Node[], W: number, fl: Flight[] = [], now = 0, t
   const failedCount = list.filter(n => n.status === 'failed' || n.status === 'killed').length
   const allDoneText = failedCount ? `Done · ${failedCount} failed` : 'All done'
   const waitingCount = list.filter(n => n.waiting && !isDone(n)).length
-  const info = waitingCount ? `⚑ ${waitingCount} need${waitingCount === 1 ? 's' : ''} you` : running ? `${running} running` : mainBusy ? clip(pretty(clean(main.last)), 22) : all ? allDoneText : ''
+  const status = waitingCount ? `⚑ ${waitingCount} need${waitingCount === 1 ? 's' : ''} you` : running ? `${running} ${lay.activeWord}` : ''
+  // what the main session does is quoted as is; the theme only restyles its own words
+  const doing = mainBusy ? clip(pretty(clean(main.last)), 22) : ''
+  const info = status ? say(status) : doing || (all ? say(allDoneText) : '')
   const leadBody2 = !c2 ? undefined
     : head ? tallHead ? `│${' '.repeat(eyeOffset)}${eyes}${' '.repeat(IW - eyeSpan - eyeOffset)}│${info ? ' ' + info : ''}` : `[${eyes}]${info ? ' ' + info : ''}`
     : all && list.length ? `${ROBOT_CHEER} ${allDoneText}`
     : !effects.enabled ? `${ROBOT}${running ? ` ${running} running` : ''}`
     : running ? narrow ? `${ROBOT} ${running} running` : `${'·'.repeat(p)}${robot}${'·'.repeat(5 - p)}  ${running} running`
     : ROBOT
-  const leadBody = c2
+  const leadBody = neon
+    ? `${tallHead ? HEAD_TOP + ' ' : ''}${list.length ? `${doneCount}/${list.length} COMPLETE` : 'NO AGENTS YET'}`
+    : c2
     ? `${tallHead ? HEAD_TOP + ' ' : ''}${list.length ? `${progressBar(doneCount, list.length, tallHead ? 8 : 12)} ${doneCount}/${list.length}` : 'No agents yet'}${!running && !all && list.length ? ' ' + spin[tick % spin.length] : ''}`
     : all ? allDoneText : list.length ? 'Waiting ' + SPIN[tick % SPIN.length] : 'Idle'
   // boxes narrower than 4 columns are dropped above, so say how many agents are not drawn
   const hidden = list.length - spots.length
-  const leadTitle = `◆ ${hasTeam ? 'Orchestrator' : 'Main'} ${doneCount}/${list.length}${hidden > 0 ? ` +${hidden} hidden` : ''}`
+  const more = hidden > 0 ? ` +${hidden} hidden` : ''
+  const leadTitle = neon ? `◆ ${hasTeam ? 'ORCHESTRATOR' : 'MAIN'}${more}` : `◆ ${hasTeam ? 'Orchestrator' : 'Main'} ${doneCount}/${list.length}${more}`
   const leadW = Math.min(W, Math.max(displayWidth(leadTitle) + 4, c2 ? displayWidth(leadBody) + 4 : 0, c2 ? displayWidth(leadBody2 ?? '') + 4 : 0, tallHead ? 0 : Math.floor(W * 0.36)))
   // with the head, the centre box hugs its content so the agent boxes keep the room
   const leadExtra = tallHead ? 2 : leadBody2 === undefined ? 0 : 1
@@ -288,10 +273,11 @@ export function drawGraph(list: Node[], W: number, fl: Flight[] = [], now = 0, t
     routes.set(s.n.id, pts)
   }
   // Lay the lines: record each cell's neighbours, colour by the agent when it is working.
+  const linkOf = (n: Node) => isDone(n) || lay.mutePending && isPending(n) ? pal!.line : pal!.link
   const links = new Map<string, { dirs: Set<string>; c: string }>()
   for (const s of spots) {
     const pts = routes.get(s.n.id)!
-    const c = c2 ? (isDone(s.n) ? C2.line : C2.run) : isDone(s.n) ? 'gray' : colorOf(list, s.n.name)
+    const c = pal ? linkOf(s.n) : isDone(s.n) ? 'gray' : colorOf(list, s.n.name)
     pts.forEach((p, i) => {
       const k = `${p.x},${p.y}`
       const l = links.get(k) ?? { dirs: new Set<string>(), c }
@@ -318,7 +304,7 @@ export function drawGraph(list: Node[], W: number, fl: Flight[] = [], now = 0, t
   for (const f of fl) {
     const p = (now - f.at) / FLIGHT_MS
     if (p < 0 || p > 1) continue
-    const c = c2 ? C2.art : colorOf(list, f.from)
+    const c = pal ? pal.art : colorOf(list, f.from)
     const targets = f.to === '*' ? spots.map(s => s.n.name).filter(n => n !== f.from) : [f.to]
     for (const to of targets) {
       const out = LEAD.includes(f.from) ? [] : routeOf(f.from)
@@ -349,19 +335,26 @@ export function drawGraph(list: Node[], W: number, fl: Flight[] = [], now = 0, t
     const tokens = done && n.tokens ? ` · ${tokensText(n.tokens)}` : ''
     const state = (failed ? '✗ ' + n.status : pending ? '○ ' + n.status : waiting ? '⚑ needs you' : done ? (n.status === 'idle' ? '✓ idle' : '✓ done') : `● ${spin[tick % spin.length]} ${n.external ? secs(now - (n.since ?? now)) : n.tools}`) + (n.external && !done || waiting ? '' : took) + tokens
     const body = n.reason ? pretty(clean(n.reason)) : !n.last || n.last === 'starting' ? 'Starting' : pretty(clean(n.last))
-    if (c2) {
-      const tone = toneFrom(failed ? C2.fail : waiting ? C2.ask : pending ? C2.pend : done ? C2.done : n.status === 'running' ? C2.run : C2.pend, C2.run)
-      box(x, y, w, n.external ? `⬡ ${cap(n.name)}` : cap(n.name), state, body, tone, C2.log, landed(n.name), tone)
+    if (pal) {
+      const tone = toneFrom(toneOf(pal, n), pal.run)
+      if (neon) {
+        // neon card: `● name` on the border, the task inside, then the status and a metric on their own line
+        const s = neonState(n, now, effects.enabled ? spin[tick % spin.length] : '●')
+        const card = box(x, y, w, `${s.glyph} ${n.external ? '⬡ ' : ''}${n.name}`, '', body, tone, NEON.log, landed(n.name), tone, '')
+        const room = card.w - 4
+        put(card.x + 2, y + 1, clip(s.label, room), tone, true)
+        if (displayWidth(s.metric) + 1 < room - displayWidth(s.label)) put(card.x + card.w - 2 - displayWidth(s.metric), y + 1, s.metric, NEON.muted)
+      } else box(x, y, w, n.external ? `⬡ ${cap(n.name)}` : cap(n.name), state, body, tone, pal.log, landed(n.name), tone)
     } else
       box(x, y, w, n.external ? `⬡ ${cap(n.name)}` : cap(n.name), state, body, toneFrom(failed ? 'red' : waiting ? 'yellow' : done ? 'gray' : c), done ? toneFrom('gray', 'white') : undefined, landed(n.name), toneFrom(failed ? 'red' : waiting ? 'yellow' : done ? 'green' : c))
   }
-  const lead = box(cx, cy, leadW, leadTitle, '', leadBody, c2 ? C2.hdr : 'cyan', c2 ? C2.log : all ? 'green' : 'cyan', LEAD.some(landed), undefined, leadBody2, tallHead ? HEAD_BOTTOM : undefined)
+  const lead = box(cx, cy, leadW, leadTitle, '', leadBody, pal ? pal.hdr : 'cyan', pal ? pal.log : all ? 'green' : 'cyan', LEAD.some(landed), undefined, leadBody2, tallHead ? HEAD_BOTTOM : undefined)
   if (head) {
     if (tallHead) {
-      put(lead.x + 2, cy, HEAD_TOP, HEAD_FG, true)
-      put(lead.x + 2, cy + 1, '│', HEAD_FG, true)
-      put(lead.x + 3 + IW, cy + 1, '│', HEAD_FG, true)
-      put(lead.x + 2, cy + 2, HEAD_BOTTOM, HEAD_FG, true)
+      put(lead.x + 2, cy, HEAD_TOP, pal!.head, true)
+      put(lead.x + 2, cy + 1, '│', pal!.head, true)
+      put(lead.x + 3 + IW, cy + 1, '│', pal!.head, true)
+      put(lead.x + 2, cy + 2, HEAD_BOTTOM, pal!.head, true)
     }
     const eyeX = lead.x + (tallHead ? 3 + eyeOffset : 3)
     // Keep tiny panes clipped to the body, away from the outer border and joins.
@@ -370,20 +363,21 @@ export function drawGraph(list: Node[], W: number, fl: Flight[] = [], now = 0, t
     const rob = all && list.length ? ROBOT_CHEER : robot
     const offset = effects.enabled && !narrow && running ? p : 0
     if (offset + displayWidth(rob) < leadW - 4)
-      put(lead.x + 2 + offset, cy + 1, rob, HEAD_FG, true)
+      put(lead.x + 2 + offset, cy + 1, rob, pal!.head, true)
   }
   if (!list.length) {
     const hint = clip('No agents yet · They appear when work is delegated', W)
     put(Math.max(0, Math.round(cx - displayWidth(hint) / 2)), Math.min(H - 1, cy + 3 + (tallHead ? 1 : 0)), hint, 'gray')
   }
-  // join the lines into the orchestrator's sides
+  // join the lines into the orchestrator's sides; neon colours each join like its line
+  const join = (n: Node) => neon ? linkOf(n) : 'cyan'
   for (const s of spots) {
     if (straight.has(s.n.id)) {
       const jy = s.y < cy ? cy - 1 : cy + 1 + leadExtra
       // join only onto plain border, never over the title or status text
-      if (grid[jy]?.[s.x]?.ch === '─') put(s.x, jy, s.y < cy ? '┴' : '┬', 'cyan')
+      if (grid[jy]?.[s.x]?.ch === '─') put(s.x, jy, s.y < cy ? '┴' : '┬', join(s.n))
     }
-    else put(s.x < cx ? leadL : leadR, cy, s.x < cx ? '┤' : '├', 'cyan')
+    else put(s.x < cx ? leadL : leadR, cy, s.x < cx ? '┤' : '├', join(s.n))
   }
 
   // tachyonfx SweepIn: eased sliding window, ten-cell gradient, zero directional variance.
@@ -412,38 +406,6 @@ const ROBOT = '[•_•]'
 const ROBOT_BLINK = '[-_-]'
 const ROBOT_CHEER = '\\[^_^]/'
 
-// mid-tones (not near-white) so outline, log text and Codex stay readable on light terminals too
-const HEAD_FG = '#c8c2b5'
-const C2 = {
-  run: '#ffb454', done: '#7ee787', fail: '#ff6b6b', pend: '#8b949e', line: '#3d4450', ask: '#f9e04b',
-  hdr: '#a78bfa', art: '#79c0ff', log: '#a9b4c0', spin: '⣾⣽⣻⢿⡿⣟⣯⣷',
-}
-const hex = (h: string) => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16))
-// Terminal named colours need RGB components while an effect is between its endpoints.
-const RGB: Record<string, string> = { blue: '#0000ff', green: '#008000', yellow: '#ffff00', magenta: '#ff00ff', red: '#ff0000', cyan: '#00ffff', gray: '#808080', white: '#ffffff', black: '#000000' }
-const rgb = (c: string) => hex(RGB[c] ?? c)
-const toHex = (channels: number[]) => '#' + channels.map(v => Math.round(v).toString(16).padStart(2, '0')).join('')
-// tachyonfx fade_to: interpolate freshly rendered foregrounds, never accumulate rounding per frame.
-export function fadeColor(from: string, to: string, p: number) {
-  if (p <= 0) return from
-  if (p >= 1) return to
-  const a = rgb(from), b = rgb(to)
-  return toHex(a.map((v, i) => v + (b[i] - v) * p))
-}
-// tachyonfx hsl_shift: convert RGB to HSL, add hue degrees, preserve saturation/lightness.
-export function hueShift(c: string, degrees: number) {
-  const [r, g, b] = rgb(c).map(v => v / 255)
-  const max = Math.max(r, g, b), min = Math.min(r, g, b), delta = max - min
-  if (!delta) return c
-  const light = (max + min) / 2
-  const saturation = delta / (1 - Math.abs(2 * light - 1))
-  const hue = (max === r ? (g - b) / delta : max === g ? (b - r) / delta + 2 : (r - g) / delta + 4) * 60
-  const h = ((hue + degrees) % 360 + 360) % 360 / 60
-  const chroma = (1 - Math.abs(2 * light - 1)) * saturation
-  const x = chroma * (1 - Math.abs(h % 2 - 1))
-  const channels = h < 1 ? [chroma, x, 0] : h < 2 ? [x, chroma, 0] : h < 3 ? [0, chroma, x] : h < 4 ? [0, x, chroma] : h < 5 ? [x, 0, chroma] : [chroma, 0, x]
-  return toHex(channels.map(v => (v + light - chroma / 2) * 255))
-}
 export const progressBar = (done: number, total: number, width: number) => {
   const full = total ? Math.round((done / total) * width) : 0
   return '█'.repeat(full) + '░'.repeat(width - full)
@@ -457,8 +419,8 @@ export function retro(rows: Seg[][]): Seg[][] {
       let i = 0
       for (const ch of sg.t) {
         const c = ch === '█' ? fadeColor('#a78bfa', '#f472b6', run > 1 ? Math.min(0.9999, i++ / (run - 1)) : 0)
-          : ch === '░' ? C2.line
-          : !sg.c && sg.b ? C2.hdr : sg.c
+          : ch === '░' ? RETRO.line
+          : !sg.c && sg.b ? RETRO.hdr : sg.c
         const last = out[out.length - 1]
         if (last && last.c === c && last.b === sg.b && last.d === sg.d) last.t += ch
         else out.push({ t: ch, c, b: sg.b, d: sg.d })
@@ -468,11 +430,6 @@ export function retro(rows: Seg[][]): Seg[][] {
   })
 }
 
-export const THEMES = ['classic', 'retro']
-export function themeArg(args: string) {
-  const m = /(?:^|\s)(?:--theme[=\s]+|-t\s+)?(\w+)\s*$/.exec(args.trim().toLowerCase())
-  return m && THEMES.includes(m[1]) ? m[1] : undefined
-}
 
 
 export function drawBus(list: Node[], msgs: Msg[], W: number, now: number, count: number, timestamps: number[], lines = GRAPH_ROWS - 2, extra = ''): Seg[][] {
@@ -1093,12 +1050,14 @@ export function resetModuleState() {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'team-graph', description: 'Show or hide the agent graph; --theme classic|retro, --rows N, --motion off|on, --robot head|plain, --needs|--tokens|--reasons|--limits on|off' })
+    await $.command.register({ name: 'team-graph', description: 'Show or hide the agent graph; --theme classic|retro|neon, --rows N, --motion off|on, --robot head|plain, --needs|--tokens|--reasons|--limits on|off' })
     $.ui.status(undefined)
     if (!motionEnvRead) {
       motionEnvRead = true
       noMotion = (await $.env.get('NO_MOTION')) != null
     }
+    const kept = await $.store.get('theme').catch(() => undefined)
+    if (typeof kept === 'string' && THEMES.includes(kept) && kept !== await read($, theme)) await update($, theme, () => kept)
     const start = await $.clock.now()
     loadedAt = start
     paneOpen = await read($, shown)
@@ -1172,6 +1131,8 @@ export const register: Register = on => {
     if (pick) {
       if (await isOwner($)) {
         await update($, theme, () => pick)
+        // the session state starts fresh in each session; the store carries the choice to the next one
+        await $.store.set('theme', pick).catch(() => {})
         if (!(await read($, shown))) {
           await update($, shown, () => true)
           await openGraph($)
@@ -1384,8 +1345,7 @@ export const register: Register = on => {
     fastMotion = enabled && (effects.opened >= 0 && now - effects.opened < SWEEP_MS || list.some(n => isDone(n) && n.ended != null && now - n.ended < FADE_MS))
     const total = Math.max(0, (e.props.bodyColumns ?? e.viewport?.columns ?? 120) - 2)
     const hasTeam = list.some(n => n.id.endsWith('@team'))
-    const saved = await read($, theme)
-    const look = saved === 'c2ms' ? 'retro' : saved
+    const look = lookOf(await read($, theme))
     const style = await read($, robotStyle)
     const mainNow = { last: await read($, mainLast), at: await read($, mainAt) }
     const busArgs = [await read($, messageCount), await read($, times)] as const
@@ -1393,7 +1353,22 @@ export const register: Register = on => {
     let rows: Seg[][]
     let divider = -1
     let H = GRAPH_ROWS
-    if (total < 110) {
+    if (look === 'neon') {
+      // neon stacks everything (header, graph, event stream) at any width; the last row holds the resize keys
+      const viewport = e.viewport?.rows ?? 30
+      const graphMode = neonFits(total, list.length)
+      // default height is the compact graph (two card rows round the orchestrator); k/j or --rows change it
+      H = graphMode ? clamp((await read($, graphRows)) || NEON_GRAPH_MIN, NEON_GRAPH_MIN, 40) : 12
+      // 11 fixed rows: header 6, two frame borders each, the divider; the stream takes what is left
+      const busLines = Math.max(1, Math.min(60, viewport - H - 11))
+      const graph = graphMode ? drawGraph(list, total - 4, enabled ? fl : [], now, tick, hasTeam, look, H, effects, style, mainNow) : undefined
+      rows = drawNeon({ list, msgs, W: total, now, count: busArgs[0], extra, graph, listRows: H, busLines, live: enabled, spin: enabled ? NEON.spin[tick % NEON.spin.length] : '●' })
+      // the resize keys only change the graph's height, so a list has none
+      if (graphMode) {
+        divider = rows.length
+        rows.push([])
+      }
+    } else if (total < 110) {
       // sidebar: graph on top, the bus below it with the remaining height
       // 0 = not set by the person yet: give the graph ~60% of the docked height
       const auto = Math.floor(((e.viewport?.rows ?? 30) - 8) * 0.6) | 1
@@ -1426,12 +1401,13 @@ export const register: Register = on => {
           const line = textOf(segs)
           if (i !== divider) return line
           // keys sit next to their arrows; the left half (k ▲) shrinks, the right half (▼ j) grows
-          const label = clip('k ▲ resize ▼ j', total)
+          const { resizeLabel, resizeFill: fill, minRows } = layoutOf(look)
+          const label = clip(resizeLabel, total)
           const split = label.includes('▼') ? label.indexOf('▼') : label.length
           const spare = Math.max(0, total - displayWidth(label))
-          const left = '─'.repeat(Math.floor(spare / 2)) + label.slice(0, split)
-          const right = label.slice(split) + '─'.repeat(Math.ceil(spare / 2))
-          const smaller = () => update($, graphRows, () => Math.max(11, H - 2))
+          const left = fill.repeat(Math.floor(spare / 2)) + label.slice(0, split)
+          const right = label.slice(split) + fill.repeat(Math.ceil(spare / 2))
+          const smaller = () => update($, graphRows, () => Math.max(minRows, H - 2))
           const bigger = () => update($, graphRows, () => Math.min(40, H + 2))
           return (
             <Box flexDirection="row" width={total} overflow="hidden">

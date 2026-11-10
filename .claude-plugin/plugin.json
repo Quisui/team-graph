@@ -1,7 +1,7 @@
 {
   "name": "team-graph",
-  "version": "0.4.1",
-  "description": "Live teams, subagents and AI CLI graph with classic/retro themes, message bus and optional terminal motion",
+  "version": "0.5.0",
+  "description": "Live teams, subagents and AI CLI graph with classic, retro and neon themes, message bus and optional terminal motion",
   "types": "./types/index.d.ts",
   "displayName": "Team graph",
   "author": {
