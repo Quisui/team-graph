@@ -56,6 +56,16 @@ const FADE_MS = 600
 const FLIGHT_MS = 1800
 const FLASH_MS = 700
 const FLIGHT_TTL = FLIGHT_MS + FLASH_MS
+export const CLEAR_MS = 30000
+
+// Once every node is done for CLEAR_MS, the graph clears and the orchestrator shows Idle until the next run.
+// Old finished external CLIs drop after 5 minutes even while other agents run.
+// ponytail: the clear shows on the next render; a pane with no motion redraws only on new events.
+export function settled(list: Node[], now: number) {
+  const last = Math.max(...list.map(n => n.ended ?? now))
+  if (list.length && list.every(isDone) && now - last > CLEAR_MS) return []
+  return list.filter(n => !(n.external && isDone(n) && now - (n.ended ?? now) > 300000))
+}
 const QUIET_TOOLS = ['SubagentHandback', 'SendMessage', 'TaskUpdate', 'TaskCreate', 'TaskList', 'TaskGet', 'ToolSearch']
 const CODEX_ANSWER = '[codex] Assistant message captured: '
 const clamp = (n: number, min: number, max: number) => Math.min(max, Math.max(min, n))
@@ -1362,8 +1372,7 @@ export const register: Register = on => {
     const now0 = await $.clock.now()
     const show = await read($, features)
     const waiting = await read($, waits)
-    const list = (await read($, nodes)).filter(n => !(n.external && isDone(n) && now0 - (n.ended ?? now0) > 300000))
-      .map(n => withFeatures(n, show, waiting))
+    const list = settled(await read($, nodes), now0).map(n => withFeatures(n, show, waiting))
     const msgs = await read($, log)
     const fl = await read($, flights)
     await read($, frame) // Subscribe to animation invalidation.

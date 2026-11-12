@@ -1,6 +1,6 @@
 {
   "name": "team-graph",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "description": "Live teams, subagents and AI CLI graph with classic, retro, neon and pulse themes, message bus and optional terminal motion",
   "types": "./types/index.d.ts",
   "displayName": "Team graph",

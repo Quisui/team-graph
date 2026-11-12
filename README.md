@@ -42,6 +42,7 @@ working cards, a scrolling title gradient, a shimmer across the progress bar and
   Kimi, Copilot, and `claude -p`.
 - Classic, retro, neon and pulse themes; retro includes an animated robot head and gradient progress bar, neon a cyberpunk dashboard, pulse the same dashboard with more motion.
 - Message flights, completion flashes, per-agent timers, and an activity sparkline.
+- The graph clears 30 seconds after every agent is done, and the orchestrator shows Idle until the next run.
 - A 400 ms graph sweep, a 600 ms completion colour fade, and flowing hue on running lines.
 - Persisted visibility, theme, robot style, motion, and graph height. Idle effects stop updating.
 - Resize controls with `k` / `j` in the docked view; automatic layout sizing.

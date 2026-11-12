@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { drawBus, drawGraph, fadeColor, retro, tokensText, usageText, withFeatures } from './register'
+import { drawBus, drawGraph, fadeColor, retro, tokensText, usageText, withFeatures, settled, CLEAR_MS } from './register'
 import { harness, stateKey } from './fake-engine'
 
 const node = { id: 'x', name: 'x', status: 'running', tools: 1, last: '', done: false, since: 0 }
@@ -562,4 +562,12 @@ test('in auto mode a plugin ask or a question tool still needs the person; paral
   await Promise.all([launch(1), launch(2)])
   const names = h.state('nodes').filter((n: any) => n.external).map((n: any) => n.name)
   expect(new Set(names).size).toBe(names.length)
+})
+
+test('graph clears 30s after every node is done, then the orchestrator idles', () => {
+  const n = (id: string, done: boolean, ended?: number) => ({ id, name: id, status: done ? 'completed' : 'running', tools: 1, last: '', done, since: 0, ended })
+  const all = [n('a', true, 1000), n('b', true, 5000)]
+  expect(settled(all, 5000 + CLEAR_MS).length).toBe(2)
+  expect(settled(all, 5001 + CLEAR_MS)).toEqual([])
+  expect(settled([...all, n('c', false)], 999999).length).toBe(3)
 })
