@@ -31,14 +31,14 @@ test('neon theme arguments preserve classic, retro and saved-theme compatibility
   expect(lookOf('c2ms')).toBe('retro')
 })
 
-test('neon selection persists into a fresh session', async () => {
+test('a picked theme persists into a fresh session', async () => {
   const writes: [string, unknown][] = []
   const first = harness({ store: { set: async (key: string, value: unknown) => { writes.push([key, value]) } } })
-  await first.run('command.run', { command: 'team-graph', args: '--theme neon' })
-  expect(writes).toContainEqual(['theme', 'neon'])
-  const second = harness({ store: { get: async (key: string) => key === 'theme' ? 'neon' : undefined } })
+  await first.run('command.run', { command: 'team-graph', args: '--theme retro' })
+  expect(writes).toContainEqual(['theme', 'retro'])
+  const second = harness({ store: { get: async (key: string) => key === 'theme' ? 'retro' : undefined } })
   await second.run('session.start')
-  expect(second.state('theme')).toBe('neon')
+  expect(second.state('theme')).toBe('retro')
 })
 
 test('session start ignores an invalid stored theme', async () => {

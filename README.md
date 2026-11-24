@@ -152,7 +152,7 @@ interrupted ends as `stopped`, not failed. A run with failures ends with
 `Done · N failed` instead of `All done`. Message age uses
 three brightness levels: newest normal, middle dim, oldest dimmer.
 
-`retro` is the default theme (state colours, gradient progress bar, robot head); `classic` colours each agent instead.
+`neon` is the default theme. `retro` uses state colours, a gradient progress bar and a robot head; `classic` colours each agent instead.
 `neon` stacks a header (active, done, elapsed), the session progress bar, the graph with
 status-coloured cards and cyan links, and an event stream. Narrow panes, or teams too large for
 readable cards, show the agents as a list. The resize keys sit on its last row. The theme choice

@@ -29,7 +29,7 @@ const graphRows = atom({ plugin: 'team-graph', key: 'graphRows' } as const, 0)
 const mainLast = atom({ plugin: 'team-graph', key: 'mainLast' } as const, '')
 const mainAt = atom({ plugin: 'team-graph', key: 'mainAt' } as const, 0)
 const robotStyle = atom({ plugin: 'team-graph', key: 'robotStyle' } as const, 'head')
-const theme = atom({ plugin: 'team-graph', key: 'theme' } as const, 'retro')
+const theme = atom({ plugin: 'team-graph', key: 'theme' } as const, 'neon')
 const frame = atom({ plugin: 'team-graph', key: 'frame' } as const, 0)
 
 const motion = atom({ plugin: 'team-graph', key: 'motion' } as const, true)
