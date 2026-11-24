@@ -786,16 +786,25 @@ async function refreshNodes($: EngineInterface, capture = true, knownAgents?: Aw
   } finally { refreshing = false }
 }
 
-async function startExternal($: EngineInterface, provider: string, task: string, output?: string) {
+// What a CLI job is for, to tell parallel runs apart: the stem of its `-o` file (`/s/A.out` gives `A`),
+// else the Bash call's description.
+export function jobLabel(command: string, description?: unknown) {
+  const out = /(?:^|\s)(?:-o|--output-last-message)[\s=]+(["']?)([^\s"']+)\1/.exec(command)?.[2]
+  const stem = out?.split('/').at(-1)?.replace(/\.[^.]*$/, '')
+  return stem && !stem.includes('$') ? stem : typeof description === 'string' && description.trim() ? clip(description.trim(), 24) : undefined
+}
+
+async function startExternal($: EngineInterface, provider: string, task: string, output?: string, label?: string) {
   const at = await $.clock.now()
   let node!: Node
+  const base = label ? `${provider}:${label}` : provider
   // first free name among the boxes on screen, picked inside the update so parallel launches cannot
   // share one (a module counter also restarted at 1 after a reload while saved boxes kept their names)
   await update($, nodes, ns => {
     const taken = new Set(ns.map(n => n.name))
     let count = 1
-    while (taken.has(count === 1 ? provider : `${provider}-${count}`)) count++
-    const name = count === 1 ? provider : `${provider}-${count}`
+    while (taken.has(count === 1 ? base : `${base}-${count}`)) count++
+    const name = count === 1 ? base : `${base}-${count}`
     node = { id: `${name}@external`, name, external: provider, status: 'running', tools: 0, last: '', done: false, since: at, changed: at, output, background: !!output }
     return [...ns, node]
   })
@@ -907,7 +916,7 @@ async function pollExternal($: EngineInterface) {
       if (!result || (typeof result.exitCode === 'number' && result.exitCode !== 0)) {
         // the log is gone (a stopped or cleaned-up job): a box still waiting on it is over
         const gone = (await read($, nodes)).find(n => n.external && n.output === path && !n.done)
-        if (gone) await finishExternal($, gone.id, 'stopped', gone.answer ?? '')
+        if (gone && !gone.watch) await finishExternal($, gone.id, 'stopped', gone.answer ?? '')
         continue
       }
       const raw = result.stdout
@@ -940,7 +949,8 @@ async function pollExternal($: EngineInterface) {
         : plain?.last ?? node.last
       const exit = /^\[exited with code (-?\d+)\]/m.exec(raw)
       // Codex can think silently for minutes, so silence only ends a box after CODEX_SILENT_MS
-      const finished = !!exit || /^\[codex\] Turn completed\./m.test(raw) || !!plain?.finished || now - changed >= CODEX_SILENT_MS
+      // a detached job ends when its process does (below), not on its log
+      const finished = !node.watch && (!!exit || /^\[codex\] Turn completed\./m.test(raw) || !!plain?.finished || now - changed >= CODEX_SILENT_MS)
       await update($, nodes, ns => ns.map(n => n.id === node!.id ? { ...n, last, answer, changed, ...(!finished ? { status: 'running', done: false, ended: undefined } : {}) } : n))
       if (finished) {
         // 128+ is a signal exit: the job was killed (TaskStop, timeout), not a Codex failure
@@ -950,6 +960,17 @@ async function pollExternal($: EngineInterface) {
       }
     }
     for (const n of await read($, nodes)) {
+      if (n.watch && !n.done) {
+        const probe = await $.process.run(['pgrep', '-f', n.watch]).catch(() => null)
+        if (probe?.exitCode === 0) continue
+        if (probe) {
+          const said = n.watch !== n.output ? await $.process.run(['tail', '-c', '2000', n.watch]).catch(() => null) : null
+          const answer = said?.exitCode === 0 ? said.stdout.replace(/\s+/g, ' ').trim() : ''
+          // codex writes its `-o` file only on success, so an empty one is a failed run
+          await finishExternal($, n.id, n.watch !== n.output && !answer ? 'failed' : 'completed', answer || n.answer || '')
+          continue
+        }
+      }
       if (n.external && n.background && !n.done && !n.output && now - (n.changed ?? now) >= 20000)
         await finishExternal($, n.id, 'completed', n.answer ?? '')
       // a job silent for 10 minutes was stopped without a final line; never leave it "running"
@@ -996,7 +1017,12 @@ async function nameOf($: EngineInterface, id?: string) {
 
 // The AI CLI a shell command actually runs (the command word of a segment), not one it merely mentions.
 const PROVIDERS = new Set(['codex', 'gemini', 'opencode', 'amp', 'kimi', 'copilot'])
+// prefixes that run the next word as the real command
+const WRAPPERS = new Set(['nohup', 'env', 'time', 'command', 'nice'])
+// a heredoc body is text written somewhere (a script, a prompt), not a command this shell runs
+const HEREDOC = /<<-?\s*(['"]?)(\w+)\1[^\n]*\n[\s\S]*?\n\s*\2[ \t]*(?=\n|$)/g
 export function providerOf(command: string): string | undefined {
+  command = command.replace(HEREDOC, '')
   // the Codex helper counts only when asked to run work (task/review); status, result, cancel and setup
   // are checks on a job, however the command spells the helper (direct path or a "$S" variable)
   if (/codex-companion/.test(command))
@@ -1006,13 +1032,50 @@ export function providerOf(command: string): string | undefined {
     // status/result/cancel only ask about a job; they are not one
     if (/codex-companion\.mjs/.test(seg)) { if (/codex-companion\.mjs\S*\s+(status|result|cancel)\b/.test(seg)) continue; return 'codex' }
     const words = seg.trim().split(/\s+/).filter(w => !/^\w+=/.test(w))
+    while (WRAPPERS.has(words[0] ?? '')) words.shift()
     const cmd = (words[0] ?? '').split('/').at(-1) ?? ''
-    // `codex --version`, `gemini --help`, `codex login`: a check on the CLI, not a job
-    if (PROVIDERS.has(cmd) && /^(-V|-v|--version|-h|--help|login|logout)$/.test(words[1] ?? '')) continue
+    // `codex --version`, `gemini --help`, `codex login`, `codex exec --help`: a check on the CLI, not a job
+    if (PROVIDERS.has(cmd) && (/^(-V|-v|--version|login|logout)$/.test(words[1] ?? '') || words.slice(1).some(w => w === '-h' || w === '--help'))) continue
     if (PROVIDERS.has(cmd)) return cmd
     if (cmd === 'claude' && /^(-p|--print)$/.test(words[1] ?? '')) return 'claude'
   }
   return undefined
+}
+
+// Shell segments split at unquoted `;`, `&&`, `||`, `|` and newlines; a lone `&` ends a detached segment.
+export function segmentsOf(command: string) {
+  const out: { text: string; detached: boolean }[] = []
+  let cur = '', quote = ''
+  const push = (detached: boolean) => { if (cur.trim()) out.push({ text: cur.trim(), detached }); cur = '' }
+  command = command.replace(HEREDOC, '')
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i], n = command[i + 1] ?? ''
+    if (quote) { if (c === quote) quote = ''; cur += c; continue }
+    if (c === '"' || c === "'") { quote = c; cur += c; continue }
+    if (c === '\n' || c === ';') { push(false); continue }
+    if ((c === '&' || c === '|') && n === c) { push(false); i++; continue }
+    if (c === '|') { push(false); continue }
+    // `2>&1` and `&>` are redirects, not jobs
+    if (c === '&' && command[i - 1] !== '>' && n !== '>') { push(true); continue }
+    cur += c
+  }
+  push(false)
+  return out
+}
+
+// AI CLI jobs started with `&` (`nohup codex exec ... > A.log 2>&1 &`) outlive the Bash call, so each gets
+// its own box, watched by its `-o` file or log path until no running process names that path.
+export function detachedJobs(command: string) {
+  const defs = [...command.matchAll(/(?:^|[\s;&])(\w+=(["']?)[^\s"';&|]+\2)(?=[\s;&]|$)/g)].map(m => m[1]).join(' ')
+  const vars = Object.fromEntries(defs.split(' ').filter(Boolean).map(d => [d.slice(0, d.indexOf('=')), d.slice(d.indexOf('=') + 1).replace(/^["']|["']$/g, '')]))
+  return segmentsOf(command).filter(s => s.detached).flatMap(s => {
+    const provider = providerOf(s.text)
+    if (!provider) return []
+    const log = logPathOf(`${defs} ${s.text}`)
+    const out = /(?:^|\s)(?:-o|--output-last-message)[\s=]+(["']?)([^\s"']+)\1/.exec(s.text)?.[2]?.replace(/\$\{?(\w+)\}?/g, (_, v) => vars[v] ?? `$${v}`)
+    const watch = [out, log].find(p => p?.startsWith('/') && !p.includes('$'))
+    return watch ? [{ provider, task: s.text, out, log, watch }] : []
+  })
 }
 
 // `Bash(npm run lint)`-style action for a subagent's tool call, shown as `Bash ▸ npm run lint`.
@@ -1209,7 +1272,9 @@ export const register: Register = on => {
     const input = e as unknown as Record<string, unknown>
     const args = (input.input ?? input.args ?? input) as Record<string, unknown>
     const command = String(args.command ?? input.command ?? '')
-    const provider = e.tool === 'Bash' ? providerOf(command) : undefined
+    const jobs = e.tool === 'Bash' ? detachedJobs(command) : []
+    const foreground = jobs.length ? segmentsOf(command).filter(s => !s.detached || !jobs.some(j => j.task === s.text)).map(s => s.text).join('\n') : command
+    const provider = e.tool === 'Bash' ? providerOf(foreground) : undefined
     const spawning = !e.agentId && e.tool === 'Agent'
     let at = 0
     let external: Node | undefined
@@ -1232,7 +1297,11 @@ export const register: Register = on => {
         for (const m of inboxMessages(JSON.stringify([{ from, summary: args.summary, text: typeof raw === 'string' ? raw : JSON.stringify(raw) }]), to))
           await addMessage($, m.from, m.to, m.text)
       }
-      external = provider ? await startExternal($, provider, command.split('\n')[0], logPathOf(command)) : undefined
+      external = provider ? await startExternal($, provider, foreground.split('\n')[0], logPathOf(foreground), jobLabel(foreground, args.description)) : undefined
+      for (const job of jobs) {
+        const node = await startExternal($, job.provider, job.task, job.log, jobLabel(job.task, jobs.length === 1 ? args.description : undefined))
+        await update($, nodes, ns => ns.map(n => n.id === node.id ? { ...n, watch: job.watch } : n))
+      }
       before = spawning ? await $.agent.list().catch(() => []) : []
     } catch {} // Graph bookkeeping must never prevent the tool from running.
     let result

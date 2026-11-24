@@ -490,6 +490,19 @@ test('quoted pipes, version checks and logins are not Codex jobs', () => {
   expect(providerOf('codex exec "a|b" && echo ok')).toBe('codex')
 })
 
+test('heredoc bodies and subcommand help are not Codex jobs', () => {
+  expect(providerOf("ls x\ncat > run.sh <<'EOF'\ncodex exec -s read-only \"$3\" < /dev/null\nEOF\nchmod +x run.sh; codex exec --help 2>&1 | grep -E 'add-dir|-o,'")).toBe(undefined)
+  expect(providerOf('codex exec --help')).toBe(undefined)
+  expect(providerOf('cat <<EOF\nrun\nEOF\ncodex exec "go"')).toBe('codex')
+})
+
+test('a CLI behind nohup, env or time still counts', () => {
+  expect(providerOf('nohup codex exec -s read-only "review" < /dev/null > A.log 2>&1')).toBe('codex')
+  expect(providerOf('env FOO=1 codex exec "x"')).toBe('codex')
+  expect(providerOf('time gemini -p "hi"')).toBe('gemini')
+  expect(providerOf('codex exec -s read-only -o /s/A.out "$(cat /s/A.prompt)" < /dev/null')).toBe('codex')
+})
+
 test('an empty graph and bus say so instead of looking broken', () => {
   expect(text(drawGraph([], 100))).toContain('No agents yet')
   const bus = drawBus([], [], 60, 0, 0, [])
